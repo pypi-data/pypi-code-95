@@ -1,0 +1,36 @@
+flow = '''
+[COMMENT_LINE_IMPORTS]
+
+# System
+
+
+# Pip
+
+
+# Local
+
+
+[COMMENT_LINE]
+
+
+
+[COMMENT_LINE_METHODS]
+
+
+
+[COMMENT_LINE_PATHS]
+
+
+
+
+[COMMENT_LINE_VARS]
+
+
+
+
+[COMMENT_LINE_FLOW]
+
+
+
+[COMMENT_LINE]
+'''.strip()
