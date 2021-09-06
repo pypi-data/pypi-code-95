@@ -1,0 +1,1 @@
+from .num_tool import random_num_list
