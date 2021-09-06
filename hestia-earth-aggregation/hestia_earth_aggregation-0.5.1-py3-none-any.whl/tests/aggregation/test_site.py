@@ -1,0 +1,19 @@
+from unittest.mock import patch
+
+from tests.utils import start_year, end_year
+from hestia_earth.aggregation.site import aggregate_country, aggregate_global
+
+class_path = 'hestia_earth.aggregation.site'
+
+
+@patch(f"{class_path}._group_by_siteType", side_effect=lambda n: n)
+@patch(f"{class_path}.aggregate_by_term")
+def test_aggregate_country(mock_aggregate, *args):
+    aggregate_country({}, [], {}, start_year, end_year)
+    mock_aggregate.assert_called_once()
+
+
+@patch(f"{class_path}.aggregate_country")
+def test_aggregate_global(mock_aggregate, *args):
+    aggregate_global({}, [], {}, start_year, end_year)
+    mock_aggregate.assert_called_once()
