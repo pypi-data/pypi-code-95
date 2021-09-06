@@ -1,0 +1,38 @@
+file = '''
+[COMMENT_LINE_IMPORTS]
+
+# System
+
+
+# Pip
+
+
+# Local
+
+
+[COMMENT_LINE]
+
+
+
+[COMMENT_LINE_PUBLIC_VARS]
+
+
+
+
+[COMMENT_LINE_FILE_PUBLIC_METHODS]
+
+
+
+
+[COMMENT_LINE_PRIVATE_VARS]
+
+
+
+
+[COMMENT_LINE_FILE_PRIVATE_METHODS]
+
+
+
+
+[COMMENT_LINE]
+'''.strip()
