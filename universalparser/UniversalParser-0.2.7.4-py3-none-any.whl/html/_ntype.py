@@ -1,0 +1,18 @@
+HTML_SINGLE_TAGS = [
+    'link',
+    'meta',
+    'br',
+    'area',
+    'base',
+    'col',
+    'command',
+    'embed',
+    'hr',
+    'img',
+    'input',
+    'keygen',
+    'param',
+    'source',
+    'track',
+    'wbr',
+]
