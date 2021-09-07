@@ -1,0 +1,1 @@
+from .__main__ import generate_js_standalone
