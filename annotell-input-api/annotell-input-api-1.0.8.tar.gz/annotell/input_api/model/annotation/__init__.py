@@ -1,0 +1,1 @@
+from annotell.input_api.model.annotation.export_annotation import Annotation
