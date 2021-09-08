@@ -1,0 +1,17 @@
+ITEM_ID_TEXT_VAR = "txt"
+ITEM_ID_NUMBER_VAR = "num"
+ITEM_ID_LOCATION = "loc"
+ITEM_ID_ITEM = "item"
+ITEM_ID_SOUND = "snd"
+ITEM_ID_PARTICLE = "part"
+ITEM_ID_POTION = "pot"
+ITEM_ID_GAME_VALUE = "g_val"
+ITEM_ID_DYNAMIC_VAR = "var"
+ITEM_ID_TAG = "bl_tag"
+
+BLOCK_ID = "block"
+BRACKET_ID = "bracket"
+
+DEFAULT_AUTHOR = "Unknown"
+
+SECTION_SIGN = "\N{SECTION SIGN}"
