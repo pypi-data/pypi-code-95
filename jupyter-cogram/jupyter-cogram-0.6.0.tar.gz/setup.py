@@ -1,0 +1,102 @@
+import os
+from pathlib import Path
+from typing import Text, List, Optional
+
+import setuptools
+from setuptools.command.install import install
+
+config_location = Path().home() / ".ipython/nbextensions/jupyter-cogram"
+token_file_name = "cogram_auth_token"
+
+
+def get_files_in_dir(dir: Text, prefix: Text = ".") -> List[Text]:
+    return [str(Path(prefix) / o) for o in next(os.walk(dir), (None, None, []))[2]]
+
+
+data_files = [
+    (
+        "share/jupyter/nbextensions/jupyter-cogram",
+        get_files_in_dir("jupyter_cogram", "jupyter_cogram"),
+    ),
+    (
+        "etc/jupyter/jupyter_notebook_config.d",
+        get_files_in_dir("jupyter_cogram/etc", "jupyter_cogram/etc"),
+    ),
+    (
+        "share/jupyter/nbextensions/jupyter-cogram/jupyter_cogram_serverextension",
+        get_files_in_dir(
+            "jupyter_cogram/jupyter_cogram_serverextension",
+            "jupyter_cogram/jupyter_cogram_serverextension",
+        ),
+    ),
+]
+
+
+def get_readme_content() -> Optional[Text]:
+    try:
+        return open("README.md").read()
+    except FileNotFoundError:
+        return None
+
+
+def install_token(loc: Path = config_location) -> None:
+    token = os.environ.get("COGRAM_API_TOKEN")
+
+    if not token:
+        return
+
+    loc = loc.absolute()
+
+    if not loc.is_dir():
+        loc.mkdir(parents=True)
+
+    p = loc / token_file_name
+
+    p.write_text(token)
+
+
+class CogramInstall(install):
+    def run(self):
+        install.run(self)
+        try:
+            install_token()
+        except Exception as e:
+            print(f"Could not install Cogram API token:\n{e}")
+
+
+setuptools.setup(
+    name="jupyter-cogram",
+    # noinspection PyUnresolvedReferences
+    version="0.6.0",
+    url="https://cogram.ai",
+    author="ricwo",
+    author_email="r@cogram.ai",
+    description="Intuitive coding for Jupyter Notebook using natural language.",
+    long_description=get_readme_content(),
+    long_description_content_type="text/markdown",
+    keywords=["machine learning", "NLP", "code generation", "program synthesis"],
+    packages=setuptools.find_packages(),
+    install_requires=[
+        "notebook~=6.0",
+        "semantic-version~=2.8",
+        'importlib-metadata >= 1.0; python_version < "3.8"',
+        "requests~=2.26.0",
+    ],
+    python_requires=">=3.6",
+    classifiers=[
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.6",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Development Status :: 4 - Beta",
+        "Operating System :: MacOS",
+        "Operating System :: Unix",
+        "Operating System :: Microsoft :: Windows",
+        "License :: Other/Proprietary License",
+    ],
+    data_files=data_files,
+    include_package_data=True,
+    zip_safe=False,
+    cmdclass={"install": CogramInstall},
+)
