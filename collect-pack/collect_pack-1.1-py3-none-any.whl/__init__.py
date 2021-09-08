@@ -1,0 +1,1 @@
+from .collect_framework import amount_of_unique_char, format_return, cli, work_with_args
