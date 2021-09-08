@@ -1,0 +1,1688 @@
+import warnings
+from pythermalcomfort.psychrometrics import t_o, p_sat_torr, p_sat
+from pythermalcomfort.utilities import (
+    units_converter,
+    transpose_sharp_altitude,
+    check_standard_compliance,
+)
+import math
+from scipy import optimize
+from pythermalcomfort.optimized_functions import (
+    set_optimized,
+    phs_optimized,
+    pmv_ppd_optimized,
+    utci_optimized,
+)
+
+
+def cooling_effect(tdb, tr, vr, rh, met, clo, wme=0, units="SI"):
+    """
+    Returns the value of the Cooling Effect (`CE`_) calculated in compliance with the
+    ASHRAE 55 2017 Standard [1]_. The `CE`_ of the elevated air speed is the value that,
+    when subtracted equally from both the average air temperature and the mean radiant
+    temperature, yields the same `SET`_ under still air as in the first `SET`_ calculation
+    under elevated air speed. The cooling effect is calculated only for air speed
+    higher than 0.1 m/s.
+
+    .. _CE: https://en.wikipedia.org/wiki/Thermal_comfort#Cooling_Effect
+
+    Parameters
+    ----------
+    tdb : float
+        dry bulb air temperature, default in [°C] in [°F] if `units` = 'IP'
+    tr : float
+        mean radiant temperature, default in [°C] in [°F] if `units` = 'IP'
+    vr : float
+        relative air speed, default in [m/s] in [fps] if `units` = 'IP'
+
+        Note: vr is the relative air speed caused by body movement and not the air
+        speed measured by the air speed sensor. The relative air speed is the sum of the
+        average air speed measured by the sensor plus the activity-generated air speed
+        (Vag). Where Vag is the activity-generated air speed caused by motion of
+        individual body parts. vr can be calculated using the function
+        :py:meth:`pythermalcomfort.utilities.v_relative`.
+    rh : float
+        relative humidity, [%]
+    met : float
+        metabolic rate, [met]
+    clo : float
+        clothing insulation, [clo]
+
+        Note: The activity as well as the air speed modify the insulation characteristics
+        of the clothing and the adjacent air layer. Consequently the ISO 7730 states that
+        the clothing insulation shall be corrected [2]_. The ASHRAE 55 Standard corrects
+        for the effect of the body movement for met equal or higher than 1.2 met using
+        the equation clo = Icl × (0.6 + 0.4/met) The dynamic clothing insulation, clo,
+        can be calculated using the function
+        :py:meth:`pythermalcomfort.utilities.clo_dynamic`.
+    wme : float
+        external work, [met] default 0
+    units: str default="SI"
+        select the SI (International System of Units) or the IP (Imperial Units) system.
+
+    Returns
+    -------
+    ce : float
+        Cooling Effect, default in [°C] in [°F] if `units` = 'IP'
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from pythermalcomfort.models import cooling_effect
+        >>> CE = cooling_effect(tdb=25, tr=25, vr=0.3, rh=50, met=1.2, clo=0.5)
+        >>> print(CE)
+        1.64
+
+        >>> # for users who wants to use the IP system
+        >>> CE = cooling_effect(tdb=77, tr=77, vr=1.64, rh=50, met=1, clo=0.6, units="IP")
+        >>> print(CE)
+        3.74
+
+    Raises
+    ------
+    ValueError
+        If the cooling effect could not be calculated
+    """
+
+    if units.lower() == "ip":
+        tdb, tr, vr = units_converter(tdb=tdb, tr=tr, v=vr)
+
+    if vr <= 0.1:
+        return 0
+
+    still_air_threshold = 0.1
+
+    warnings.simplefilter("ignore")
+
+    initial_set_tmp = set_tmp(
+        tdb=tdb,
+        tr=tr,
+        v=vr,
+        rh=rh,
+        met=met,
+        clo=clo,
+        wme=wme,
+        round=False,
+        calculate_ce=True,
+    )
+
+    def function(x):
+        return (
+            set_tmp(
+                tdb - x,
+                tr - x,
+                v=still_air_threshold,
+                rh=rh,
+                met=met,
+                clo=clo,
+                wme=wme,
+                round=False,
+                calculate_ce=True,
+            )
+            - initial_set_tmp
+        )
+
+    try:
+        ce = optimize.brentq(function, 0.0, 15)
+    except ValueError:
+        ce = 0
+
+    warnings.simplefilter("always")
+
+    if ce == 0:
+        warnings.warn(
+            "The cooling effect could not be calculated, assuming ce = 0", UserWarning
+        )
+
+    if units.lower() == "ip":
+        ce = ce / 1.8 * 3.28
+
+    return round(ce, 2)
+
+
+def pmv_ppd(tdb, tr, vr, rh, met, clo, wme=0, standard="ISO", units="SI"):
+    """
+    Returns Predicted Mean Vote (`PMV`_) and Predicted Percentage of Dissatisfied (
+    `PPD`_) calculated in accordance to main thermal comfort Standards. The `PMV`_ is
+    an index that
+    predicts the mean value of the thermal sensation votes (self-reported perceptions)
+    of a large group of people on a sensation scale expressed from –3 to +3
+    corresponding to
+    the categories \"cold,\" \"cool,\" \"slightly cool,\" \"neutral,\" \"slightly warm,
+    \" \"warm,\" and \"hot.\"[1]_. The `PPD`_ is an index that establishes a quantitative
+    prediction of the percentage of thermally dissatisfied people determined from
+    `PMV`_ [1]_.
+
+    Parameters
+    ----------
+    tdb : float
+        dry bulb air temperature, default in [°C] in [°F] if `units` = 'IP'
+    tr : float
+        mean radiant temperature, default in [°C] in [°F] if `units` = 'IP'
+    vr : float
+        relative air speed, default in [m/s] in [fps] if `units` = 'IP'
+
+        Note: vr is the relative air speed caused by body movement and not the air
+        speed measured by the air speed sensor. The relative air speed is the sum of the
+        average air speed measured by the sensor plus the activity-generated air speed
+        (Vag). Where Vag is the activity-generated air speed caused by motion of
+        individual body parts. vr can be calculated using the function
+        :py:meth:`pythermalcomfort.utilities.v_relative`.
+    rh : float
+        relative humidity, [%]
+    met : float
+        metabolic rate, [met]
+    clo : float
+        clothing insulation, [clo]
+
+        Note: The activity as well as the air speed modify the insulation characteristics
+        of the clothing and the adjacent air layer. Consequently the ISO 7730 states that
+        the clothing insulation shall be corrected [2]_. The ASHRAE 55 Standard corrects
+        for the effect of the body movement for met equal or higher than 1.2 met using
+        the equation clo = Icl × (0.6 + 0.4/met) The dynamic clothing insulation, clo,
+        can be calculated using the function
+        :py:meth:`pythermalcomfort.utilities.clo_dynamic`.
+    wme : float
+        external work, [met] default 0
+    standard: str (default="ISO")
+        comfort standard used for calculation
+
+        - If "ISO", then the ISO Equation is used
+        - If "ASHRAE", then the ASHRAE Equation is used
+
+        Note: While the PMV equation is the same for both the ISO and ASHRAE standards,
+        the ASHRAE Standard Use of the PMV model is limited to air speeds below 0.20
+        m/s (40 fpm).
+        When air speeds exceed 0.20 m/s (40 fpm), the comfort zone boundaries are
+        adjusted based on the SET model.
+    units: str default="SI"
+        select the SI (International System of Units) or the IP (Imperial Units) system.
+
+    Returns
+    -------
+    pmv
+        Predicted Mean Vote
+    ppd
+        Predicted Percentage of Dissatisfied occupants, [%]
+
+    Notes
+    -----
+    You can use this function to calculate the `PMV`_ and `PPD`_ in accordance with
+    either the ASHRAE 55 2017 Standard [1]_ or the ISO 7730 Standard [2]_.
+
+    .. _PMV: https://en.wikipedia.org/wiki/Thermal_comfort#PMV/PPD_method
+    .. _PPD: https://en.wikipedia.org/wiki/Thermal_comfort#PMV/PPD_method
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from pythermalcomfort.models import pmv_ppd
+        >>> from pythermalcomfort.utilities import v_relative
+        >>> # calculate relative air speed
+        >>> v_r = v_relative(v=0.1, met=1.2)
+        >>> # as you can see the relative air speed is 0.16 m/s which is
+        significantly higher than v
+        >>> results = pmv_ppd(tdb=25, tr=25, vr=v_r, rh=50, met=1.2, clo=0.5, wme=0,
+        standard="ISO")
+        >>> print(results)
+        {'pmv': -0.09, 'ppd': 5.2}
+
+        >>> print(results['pmv'])
+        -0.09
+
+        >>> # for users who wants to use the IP system
+        >>> results_ip = pmv_ppd(tdb=77, tr=77, vr=0.4, rh=50, met=1.2, clo=0.5,
+        units="IP")
+        >>> print(results_ip)
+        {'pmv': 0.01, 'ppd': 5.0}
+
+    Raises
+    ------
+    StopIteration
+        Raised if the number of iterations exceeds the threshold
+    ValueError
+        The 'standard' function input parameter can only be 'ISO' or 'ASHRAE'
+    """
+    if units.lower() == "ip":
+        tdb, tr, vr = units_converter(tdb=tdb, tr=tr, v=vr)
+
+    standard = standard.lower()
+    if standard not in ["iso", "ashrae"]:
+        raise ValueError(
+            "PMV calculations can only be performed in compliance with ISO or ASHRAE "
+            "Standards"
+        )
+
+    check_standard_compliance(
+        standard=standard, tdb=tdb, tr=tr, v=vr, rh=rh, met=met, clo=clo
+    )
+
+    # if the relative air speed is higher than 0.1 then follow methodology ASHRAE
+    # Appendix H, H3
+    if standard == "ashrae" and vr >= 0.1:
+        # calculate the cooling effect
+        ce = cooling_effect(tdb=tdb, tr=tr, vr=vr, rh=rh, met=met, clo=clo, wme=wme)
+
+        tdb = tdb - ce
+        tr = tr - ce
+        vr = 0.1
+
+    _pmv = pmv_ppd_optimized(tdb, tr, vr, rh, met, clo, wme)
+
+    _ppd = 100.0 - 95.0 * math.exp(-0.03353 * pow(_pmv, 4.0) - 0.2179 * pow(_pmv, 2.0))
+
+    return {"pmv": round(_pmv, 2), "ppd": round(_ppd, 1)}
+
+
+def pmv(tdb, tr, vr, rh, met, clo, wme=0, standard="ISO", units="SI"):
+    """
+    Returns Predicted Mean Vote (`PMV`_) calculated in accordance to main thermal
+    comfort Standards. The PMV is an index that predicts the mean value of the thermal
+    sensation votes
+    (self-reported perceptions) of a large group of people on a sensation scale
+    expressed from –3 to +3 corresponding to the categories \"cold,\" \"cool,
+    \" \"slightly cool,\"
+    \"neutral,\" \"slightly warm,\" \"warm,\" and \"hot.\" [1]_
+
+    Parameters
+    ----------
+    tdb : float
+        dry bulb air temperature, default in [°C] in [°F] if `units` = 'IP'
+    tr : float
+        mean radiant temperature, default in [°C] in [°F] if `units` = 'IP'
+    vr : float
+        relative air speed, default in [m/s] in [fps] if `units` = 'IP'
+
+        Note: vr is the relative air speed caused by body movement and not the air
+        speed measured by the air speed sensor. The relative air speed is the sum of the
+        average air speed measured by the sensor plus the activity-generated air speed
+        (Vag). Where Vag is the activity-generated air speed caused by motion of
+        individual body parts. vr can be calculated using the function
+        :py:meth:`pythermalcomfort.utilities.v_relative`.
+    rh : float
+        relative humidity, [%]
+    met : float
+        metabolic rate, [met]
+    clo : float
+        clothing insulation, [clo]
+
+        Note: The activity as well as the air speed modify the insulation characteristics
+        of the clothing and the adjacent air layer. Consequently the ISO 7730 states that
+        the clothing insulation shall be corrected [2]_. The ASHRAE 55 Standard corrects
+        for the effect of the body movement for met equal or higher than 1.2 met using
+        the equation clo = Icl × (0.6 + 0.4/met) The dynamic clothing insulation, clo,
+        can be calculated using the function
+        :py:meth:`pythermalcomfort.utilities.clo_dynamic`.
+    wme : float
+        external work, [met] default 0
+    standard: str (default="ISO")
+        comfort standard used for calculation
+
+        - If "ISO", then the ISO Equation is used
+        - If "ASHRAE", then the ASHRAE Equation is used
+
+        Note: While the PMV equation is the same for both the ISO and ASHRAE standards,
+        the ASHRAE Standard Use of the PMV model is limited to air speeds below 0.20
+        m/s (40 fpm).
+        When air speeds exceed 0.20 m/s (40 fpm), the comfort zone boundaries are
+        adjusted based on the SET model.
+        See ASHRAE 55 2017 Appendix H for more information [1]_.
+    units: str default="SI"
+        select the SI (International System of Units) or the IP (Imperial Units) system.
+
+    Returns
+    -------
+    pmv : float
+        Predicted Mean Vote
+
+    Notes
+    -----
+    You can use this function to calculate the `PMV`_ [1]_ [2]_.
+
+    .. _PMV: https://en.wikipedia.org/wiki/Thermal_comfort#PMV/PPD_method
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from pythermalcomfort.models import pmv
+        >>> from pythermalcomfort.utilities import v_relative
+        >>> # calculate relative air speed
+        >>> v_r = v_relative(v=0.1, met=1.2)
+        >>> # as you can see the relative air speed is 0.16 m/s which is
+        significantly higher than v
+        >>> results = pmv(tdb=25, tr=25, vr=v_r, rh=50, met=1.2, clo=0.5)
+        >>> print(results)
+        -0.09
+    """
+
+    return pmv_ppd(tdb, tr, vr, rh, met, clo, wme, standard=standard, units=units)[
+        "pmv"
+    ]
+
+
+def set_tmp(
+    tdb,
+    tr,
+    v,
+    rh,
+    met,
+    clo,
+    wme=0,
+    body_surface_area=1.8258,
+    p_atm=101325,
+    body_position="standing",
+    units="SI",
+    **kwargs
+):
+    """
+    Calculates the Standard Effective Temperature (SET). The SET is the temperature of
+    a hypothetical isothermal environment at 50% (rh), <0.1 m/s (20 fpm) average air speed (v),
+    and tr = tdb, in which the total heat loss from the skin of an imaginary occupant
+    wearing clothing, standardized for the activity concerned. is the same as that
+    from a person in the actual environment with actual clothing and activity level.
+
+    Parameters
+    ----------
+    tdb : float
+        dry bulb air temperature, default in [°C] in [°F] if `units` = 'IP'
+    tr : float
+        mean radiant temperature, default in [°C] in [°F] if `units` = 'IP'
+    v : float
+        air speed, default in [m/s] in [fps] if `units` = 'IP'
+    rh : float
+        relative humidity, [%]
+    met : float
+        metabolic rate, [met]
+    clo : float
+        clothing insulation, [clo]
+    wme : float
+        external work, [met] default 0
+    body_surface_area : float
+        body surface area, default value 1.8258 [m2] in [ft2] if `units` = 'IP'
+
+        The body surface area can be calculated using the function
+        :py:meth:`pythermalcomfort.utilities.body_surface_area`.
+    p_atm : float
+        atmospheric pressure, default value 101325 [Pa] in [atm] if `units` = 'IP'
+    body_position: str default="standing"
+        select either "sitting" or "standing"
+    units: str default="SI"
+        select the SI (International System of Units) or the IP (Imperial Units) system.
+
+    Other Parameters
+    ----------------
+    round: boolean, deafult True
+        if True rounds the SET temperature value, if False it does not round it
+
+    Returns
+    -------
+    SET : float
+        Standard effective temperature, [°C]
+
+    Notes
+    -----
+    You can use this function to calculate the `SET`_ temperature in accordance with
+    the ASHRAE 55 2017 Standard [1]_.
+
+    .. _SET: https://en.wikipedia.org/wiki/Thermal_comfort#Standard_effective_temperature
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from pythermalcomfort.models import set_tmp
+        >>> set_tmp(tdb=25, tr=25, v=0.1, rh=50, met=1.2, clo=.5)
+        25.3
+
+        >>> # for users who wants to use the IP system
+        >>> set_tmp(tdb=77, tr=77, v=0.328, rh=50, met=1.2, clo=.5, units='IP')
+        77.6
+
+    """
+    # If the SET function is used to calculate the cooling effect then the h_c is
+    # calculated in a slightly different way
+    default_kwargs = {"round": True, "calculate_ce": False}
+    kwargs = {**default_kwargs, **kwargs}
+
+    if units.lower() == "ip":
+        if body_surface_area == 1.8258:
+            body_surface_area = 19.65
+        if p_atm == 101325:
+            p_atm = 1
+        tdb, tr, v, body_surface_area, p_atm = units_converter(
+            tdb=tdb, tr=tr, v=v, area=body_surface_area, pressure=p_atm
+        )
+
+    check_standard_compliance(
+        standard="ashrae", tdb=tdb, tr=tr, v=v, rh=rh, met=met, clo=clo
+    )
+
+    vapor_pressure = rh * p_sat_torr(tdb) / 100
+
+    _set = set_optimized(
+        tdb=tdb,
+        tr=tr,
+        v=v,
+        met=met,
+        clo=clo,
+        vapor_pressure=vapor_pressure,
+        wme=wme,
+        body_surface_area=body_surface_area,
+        p_atmospheric=p_atm,
+        body_position=body_position,
+        calculate_ce=kwargs["calculate_ce"],
+    )[0]
+
+    if units.lower() == "ip":
+        _set = units_converter(tmp=_set, from_units="si")[0]
+
+    if kwargs["round"]:
+        return round(_set, 1)
+    else:
+        return _set
+
+
+def use_fans_heatwaves(
+    tdb,
+    tr,
+    v,
+    rh,
+    met,
+    clo,
+    wme=0,
+    body_surface_area=1.8258,
+    p_atm=101325,
+    body_position="standing",
+    units="SI",
+    max_skin_blood_flow=80,
+    **kwargs
+):
+    """
+    Calculates whether the use of fans is beneficial during heatwaves.
+
+    Parameters
+    ----------
+    tdb : float
+        dry bulb air temperature, default in [°C] in [°F] if `units` = 'IP'
+    tr : float
+        mean radiant temperature, default in [°C] in [°F] if `units` = 'IP'
+    v : float
+        air speed, default in [m/s] in [fps] if `units` = 'IP'
+    rh : float
+        relative humidity, [%]
+    met : float
+        metabolic rate, [met]
+    clo : float
+        clothing insulation, [clo]
+    wme : float
+        external work, [met] default 0
+    body_surface_area : float
+        body surface area, default value 1.8258 [m2] in [ft2] if `units` = 'IP'
+
+        The body surface area can be calculated using the function
+        :py:meth:`pythermalcomfort.utilities.body_surface_area`.
+    p_atm : float
+        atmospheric pressure, default value 101325 [Pa] in [atm] if `units` = 'IP'
+    body_position: str default="standing"
+        select either "sitting" or "standing"
+    units: str default="SI"
+        select the SI (International System of Units) or the IP (Imperial Units) system.
+    max_skin_blood_flow : float
+        maximum blood flow from the core to the skin, [L/(hm2)] default 80
+
+    Other Parameters
+    ----------------
+    round: boolean, default True
+        if True rounds the SET temperature value, if False it does not round it
+
+    Returns
+    -------
+    e_skin : float
+        Total rate of evaporative heat loss from skin, [W/m2]. Equal to e_rsw + e_diff
+    e_rsw : float
+        Rate of evaporative heat loss from sweat evaporation, [W/m2]
+    e_diff : float
+        Rate of evaporative heat loss from moisture diffused through the skin, [W/m2]
+    e_max : float
+        Maximum rate of evaporative heat loss from skin, [W/m2]
+    q_sensible : float
+        Sensible heat loss from skin, [W/m2]
+    q_skin : float
+        Total rate of heat loss from skin, [W/m2]. Equal to q_sensible + e_skin
+    q_res : float
+        Total rate of heat loss through respiration, [W/m2]
+    t_core : float
+        Core temperature, [°C]
+    t_skin : float
+        Skin temperature, [°C]
+    m_bl : float
+        Skin blood flow, [L/(hm2)]
+    m_rsw : float
+        Rate at which regulatory sweat is generated, [mL/h2]
+    w : float
+        Skin wettedness, adimensional. Ranges from 0 and 1.
+    w_max : float
+        Skin wettedness (w) practical upper limit, adimensional. Ranges from 0 and 1.
+    heat_strain : bool
+        True if the model predict that the person may be experiencing heat strain
+    heat_strain_blood_flow : bool
+        True if heat strain is caused by skin blood flow (m_bl) reaching its maximum value
+    heat_strain_w : bool
+        True if heat strain is caused by skin wettedness (w) reaching its maximum value
+    heat_strain_sweating : bool
+        True if heat strain is caused by regulatory sweating (m_rsw) reaching its maximum value
+    """
+    # todo add an example
+
+    # If the SET function is used to calculate the cooling effect then the h_c is
+    # calculated in a slightly different way
+    default_kwargs = {"round": True}
+    kwargs = {**default_kwargs, **kwargs}
+
+    if units.lower() == "ip":
+        if body_surface_area == 1.8258:
+            body_surface_area = 19.65
+        if p_atm == 101325:
+            p_atm = 1
+        tdb, tr, v, body_surface_area, p_atm = units_converter(
+            tdb=tdb, tr=tr, v=v, area=body_surface_area, pressure=p_atm
+        )
+
+    check_standard_compliance(
+        standard="fan_heatwaves", tdb=tdb, tr=tr, v=v, rh=rh, met=met, clo=clo
+    )
+
+    vapor_pressure = rh * p_sat_torr(tdb) / 100
+
+    (
+        _set,
+        e_skin,
+        e_rsw,
+        e_diff,
+        e_max,
+        q_sensible,
+        q_skin,
+        q_res,
+        t_core,
+        t_skin,
+        m_bl,
+        m_rsw,
+        w,
+        w_max,
+        heat_strain_blood_flow,
+        heat_strain_w,
+        heat_strain_sweating,
+    ) = set_optimized(
+        tdb=tdb,
+        tr=tr,
+        v=v,
+        met=met,
+        clo=clo,
+        vapor_pressure=vapor_pressure,
+        wme=wme,
+        body_surface_area=body_surface_area,
+        p_atmospheric=p_atm,
+        body_position=body_position,
+        calculate_ce=False,
+        max_skin_blood_flow=max_skin_blood_flow,
+    )
+
+    output = {
+        "e_skin": e_skin,
+        "e_rsw": e_rsw,
+        "e_diff": e_diff,
+        "e_max": e_max,
+        "q_sensible": q_sensible,
+        "q_skin": q_skin,
+        "q_res": q_res,
+        "t_core": t_core,
+        "t_skin": t_skin,
+        "m_bl": m_bl,
+        "m_rsw": m_rsw,
+        "w": w,
+        "w_max": w_max,
+        "heat_strain_blood_flow": heat_strain_blood_flow,
+        "heat_strain_w": heat_strain_w,
+        "heat_strain_sweating": heat_strain_sweating,
+        "heat_strain": any(
+            [heat_strain_blood_flow, heat_strain_w, heat_strain_sweating]
+        ),
+    }
+
+    for key in output.keys():
+        # convert heat strain keys to bool
+        if "strain" in key:
+            if output[key] == 1:
+                output[key] = True
+            else:
+                output[key] = False
+
+        # round the results if needed
+        if kwargs["round"]:
+            output[key] = round(output[key], 1)
+
+    return output
+
+
+def adaptive_ashrae(tdb, tr, t_running_mean, v, units="SI"):
+    """
+    Determines the adaptive thermal comfort based on ASHRAE 55. The adaptive model
+    relates indoor design temperatures or acceptable temperature ranges to outdoor
+    meteorological
+    or climatological parameters.
+
+    Parameters
+    ----------
+    tdb : float
+        dry bulb air temperature, default in [°C] in [°F] if `units` = 'IP'
+    tr : float
+        mean radiant temperature, default in [°C] in [°F] if `units` = 'IP'
+    t_running_mean: float
+        running mean temperature, default in [°C] in [°C] in [°F] if `units` = 'IP'
+
+        The running mean temperature can be calculated using the function
+        :py:meth:`pythermalcomfort.utilities.running_mean_outdoor_temperature`.
+    v : float
+        air speed, default in [m/s] in [fps] if `units` = 'IP'
+    units: str default="SI"
+        select the SI (International System of Units) or the IP (Imperial Units) system.
+
+    Returns
+    -------
+    tmp_cmf : float
+        Comfort temperature a that specific running mean temperature, default in [°C]
+        or in [°F]
+    tmp_cmf_80_low : float
+        Lower acceptable comfort temperature for 80% occupants, default in [°C] or in [°F]
+    tmp_cmf_80_up : float
+        Upper acceptable comfort temperature for 80% occupants, default in [°C] or in [°F]
+    tmp_cmf_90_low : float
+        Lower acceptable comfort temperature for 90% occupants, default in [°C] or in [°F]
+    tmp_cmf_90_up : float
+        Upper acceptable comfort temperature for 90% occupants, default in [°C] or in [°F]
+    acceptability_80 : bol
+        Acceptability for 80% occupants
+    acceptability_90 : bol
+        Acceptability for 90% occupants
+
+    Notes
+    -----
+    You can use this function to calculate if your conditions are within the `adaptive
+    thermal comfort region`.
+    Calculations with comply with the ASHRAE 55 2017 Standard [1]_.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from pythermalcomfort.models import adaptive_ashrae
+        >>> Results = adaptive_ashrae(tdb=25, tr=25, t_running_mean=20, v=0.1)
+        >>> print(Results)
+        {'tmp_cmf': 24.0, 'tmp_cmf_80_low': 20.5, 'tmp_cmf_80_up': 27.5,
+        'tmp_cmf_90_low': 21.5, 'tmp_cmf_90_up': 26.5, 'acceptability_80': True,
+        'acceptability_90': False}
+
+        >>> print(Results['acceptability_80'])
+        True
+        # The conditions you entered are considered to be comfortable for by 80% of the
+        occupants
+
+        >>> # for users who wants to use the IP system
+        >>> Results = adaptive_ashrae(tdb=77, tr=77, t_running_mean=68, v=0.3, units='ip')
+        >>> print(Results)
+        {'tmp_cmf': 75.2, 'tmp_cmf_80_low': 68.9, 'tmp_cmf_80_up': 81.5,
+        'tmp_cmf_90_low': 70.7, 'tmp_cmf_90_up': 79.7, 'acceptability_80': True,
+        'acceptability_90': False}
+
+        >>> Results = adaptive_ashrae(tdb=25, tr=25, t_running_mean=9, v=0.1)
+        ValueError: The running mean is outside the standards applicability limits
+        # The adaptive thermal comfort model can only be used
+        # if the running mean temperature is higher than 10°C
+
+    Raises
+    ------
+    ValueError
+        Raised if the input are outside the Standard's applicability limits
+
+    """
+    if units.lower() == "ip":
+        tdb, tr, t_running_mean, vr = units_converter(
+            tdb=tdb, tr=tr, tmp_running_mean=t_running_mean, v=v
+        )
+
+    check_standard_compliance(standard="ashrae", tdb=tdb, tr=tr, v=v)
+
+    to = t_o(tdb, tr, v)
+
+    # See if the running mean temperature is between 10 °C and 33.5 °C (the range where
+    # the adaptive model is supposed to be used)
+    if 10.0 <= t_running_mean <= 33.5:
+
+        ce = 0
+        # calculate cooling effect (ce) of elevated air speed when top > 25 degC.
+        if v >= 0.6 and to >= 25:
+            if v < 0.9:
+                ce = 1.2
+            elif v < 1.2:
+                ce = 1.8
+            else:
+                ce = 2.2
+
+        # Figure out the relation between comfort and outdoor temperature depending on
+        # the level of conditioning.
+        t_cmf = 0.31 * t_running_mean + 17.8
+        tmp_cmf_80_low = t_cmf - 3.5
+        tmp_cmf_90_low = t_cmf - 2.5
+        tmp_cmf_80_up = t_cmf + 3.5 + ce
+        tmp_cmf_90_up = t_cmf + 2.5 + ce
+
+        def acceptability(t_cmf_lower, t_cmf_upper):
+            # See if the conditions are comfortable.
+            if t_cmf_lower < to < t_cmf_upper:
+                return True
+            else:
+                return False
+
+        acceptability_80 = acceptability(tmp_cmf_80_low, tmp_cmf_80_up)
+        acceptability_90 = acceptability(tmp_cmf_90_low, tmp_cmf_90_up)
+
+        if units.lower() == "ip":
+            (
+                t_cmf,
+                tmp_cmf_80_low,
+                tmp_cmf_80_up,
+                tmp_cmf_90_low,
+                tmp_cmf_90_up,
+            ) = units_converter(
+                from_units="si",
+                tmp_cmf=t_cmf,
+                tmp_cmf_80_low=tmp_cmf_80_low,
+                tmp_cmf_80_up=tmp_cmf_80_up,
+                tmp_cmf_90_low=tmp_cmf_90_low,
+                tmp_cmf_90_up=tmp_cmf_90_up,
+            )
+
+        results = {
+            "tmp_cmf": t_cmf,
+            "tmp_cmf_80_low": tmp_cmf_80_low,
+            "tmp_cmf_80_up": tmp_cmf_80_up,
+            "tmp_cmf_90_low": tmp_cmf_90_low,
+            "tmp_cmf_90_up": tmp_cmf_90_up,
+            "acceptability_80": acceptability_80,
+            "acceptability_90": acceptability_90,
+        }
+
+    else:
+        raise ValueError(
+            "The running mean is outside the standards applicability limits"
+        )
+
+    return results
+
+
+def adaptive_en(tdb, tr, t_running_mean, v, units="SI"):
+    """Determines the adaptive thermal comfort based on EN 16798-1 2019 [3]_
+
+    Parameters
+    ----------
+    tdb : float
+        dry bulb air temperature, default in [°C] in [°F] if `units` = 'IP'
+    tr : float
+        mean radiant temperature, default in [°C] in [°F] if `units` = 'IP'
+    t_running_mean: float
+        running mean temperature, default in [°C] in [°C] in [°F] if `units` = 'IP'
+
+        The running mean temperature can be calculated using the function
+        :py:meth:`pythermalcomfort.utilities.running_mean_outdoor_temperature`.
+    v : float
+        air speed, default in [m/s] in [fps] if `units` = 'IP'
+
+        Note: Indoor operative temperature correction is applicable for buildings equipped
+        with fans or personal systems providing building occupants with personal
+        control over air speed at occupant level.
+        For operative temperatures above 25°C the comfort zone upper limit can be
+        increased by 1.2 °C (0.6 < v < 0.9 m/s), 1.8 °C (0.9 < v < 1.2 m/s), 2.2 °C ( v
+        > 1.2 m/s)
+    units: str default="SI"
+        select the SI (International System of Units) or the IP (Imperial Units) system.
+
+    Returns
+    -------
+    tmp_cmf : float
+        Comfort temperature at that specific running mean temperature, default in [°C]
+        or in [°F]
+    acceptability_cat_i : bol
+        If the indoor conditions comply with comfort category I
+    acceptability_cat_ii : bol
+        If the indoor conditions comply with comfort category II
+    acceptability_cat_iii : bol
+        If the indoor conditions comply with comfort category III
+    tmp_cmf_cat_i_up : float
+        Upper acceptable comfort temperature for category I, default in [°C] or in [°F]
+    tmp_cmf_cat_ii_up : float
+        Upper acceptable comfort temperature for category II, default in [°C] or in [°F]
+    tmp_cmf_cat_iii_up : float
+        Upper acceptable comfort temperature for category III, default in [°C] or in [°F]
+    tmp_cmf_cat_i_low : float
+        Lower acceptable comfort temperature for category I, default in [°C] or in [°F]
+    tmp_cmf_cat_ii_low : float
+        Lower acceptable comfort temperature for category II, default in [°C] or in [°F]
+    tmp_cmf_cat_iii_low : float
+        Lower acceptable comfort temperature for category III, default in [°C] or in [°F]
+
+    Notes
+    -----
+    You can use this function to calculate if your conditions are within the EN
+    adaptive thermal comfort region.
+    Calculations with comply with the EN 16798-1 2019 [1]_.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from pythermalcomfort.models import adaptive_en
+        >>> Results = adaptive_en(tdb=25, tr=25, t_running_mean=20, v=0.1)
+        >>> print(Results)
+        {'tmp_cmf': 25.4, 'acceptability_cat_i': True, 'acceptability_cat_ii': True,
+        'acceptability_cat_iii': True, ... }
+
+        >>> print(Results['acceptability_cat_i'])
+        True
+        # The conditions you entered are considered to comply with Category I
+
+        >>> # for users who wants to use the IP system
+        >>> Results = adaptive_en(tdb=77, tr=77, t_running_mean=68, v=0.3, units='ip')
+        >>> print(Results)
+        {'tmp_cmf': 77.7, 'acceptability_cat_i': True, 'acceptability_cat_ii': True,
+        'acceptability_cat_iii': True, ... }
+
+        >>> Results = adaptive_en(tdb=25, tr=25, t_running_mean=9, v=0.1)
+        ValueError: The running mean is outside the standards applicability limits
+        # The adaptive thermal comfort model can only be used
+        # if the running mean temperature is between 10 °C and 30 °C
+
+    Raises
+    ------
+    ValueError
+        Raised if the input are outside the Standard's applicability limits
+
+    """
+
+    if units.lower() == "ip":
+        tdb, tr, t_running_mean, vr = units_converter(
+            tdb=tdb, tr=tr, tmp_running_mean=t_running_mean, v=v
+        )
+
+    if (t_running_mean < 10) or (t_running_mean > 30):
+        raise ValueError(
+            "The running mean is outside the standards applicability limits"
+        )
+
+    to = t_o(tdb, tr, v)
+
+    ce = 0
+    # calculate cooling effect (ce) of elevated air speed when top > 25 degC.
+    if v >= 0.6 and to >= 25:
+        if v < 0.9:
+            ce = 1.2
+        elif v < 1.2:
+            ce = 1.8
+        else:
+            ce = 2.2
+
+    t_cmf = 0.33 * t_running_mean + 18.8
+
+    t_cmf_i_lower = t_cmf - 3
+    t_cmf_ii_lower = t_cmf - 4
+    t_cmf_iii_lower = t_cmf - 5
+    t_cmf_i_upper = t_cmf + 2 + ce
+    t_cmf_ii_upper = t_cmf + 3 + ce
+    t_cmf_iii_upper = t_cmf + 4 + ce
+
+    def between(val, low, high):
+        return low < val < high
+
+    if between(to, t_cmf_i_lower, t_cmf_i_upper):
+        acceptability_i, acceptability_ii, acceptability_iii = True, True, True
+    elif between(to, t_cmf_ii_lower, t_cmf_ii_upper):
+        acceptability_ii, acceptability_iii = True, True
+        acceptability_i = False
+    elif between(to, t_cmf_iii_lower, t_cmf_iii_upper):
+        acceptability_iii = True
+        acceptability_i, acceptability_ii = False, False
+    else:
+        acceptability_i, acceptability_ii, acceptability_iii = False, False, False
+
+    if units.lower() == "ip":
+        t_cmf, t_cmf_i_upper, t_cmf_ii_upper, t_cmf_iii_upper = units_converter(
+            from_units="si",
+            tmp_cmf=t_cmf,
+            tmp_cmf_cat_i_up=t_cmf_i_upper,
+            tmp_cmf_cat_ii_up=t_cmf_ii_upper,
+            tmp_cmf_cat_iii_up=t_cmf_iii_upper,
+        )
+        t_cmf_i_lower, t_cmf_ii_lower, t_cmf_iii_lower = units_converter(
+            from_units="si",
+            tmp_cmf_cat_i_low=t_cmf_i_lower,
+            tmp_cmf_cat_ii_low=t_cmf_ii_lower,
+            tmp_cmf_cat_iii_low=t_cmf_iii_lower,
+        )
+
+    results = {
+        "tmp_cmf": round(t_cmf, 1),
+        "acceptability_cat_i": acceptability_i,
+        "acceptability_cat_ii": acceptability_ii,
+        "acceptability_cat_iii": acceptability_iii,
+        "tmp_cmf_cat_i_up": round(t_cmf_i_upper, 1),
+        "tmp_cmf_cat_ii_up": round(t_cmf_ii_upper, 1),
+        "tmp_cmf_cat_iii_up": round(t_cmf_iii_upper, 1),
+        "tmp_cmf_cat_i_low": round(t_cmf_i_lower, 1),
+        "tmp_cmf_cat_ii_low": round(t_cmf_ii_lower, 1),
+        "tmp_cmf_cat_iii_low": round(t_cmf_iii_lower, 1),
+    }
+
+    return results
+
+
+def utci(tdb, tr, v, rh, units="SI", return_stress_category=False):
+    """Determines the Universal Thermal Climate Index (UTCI). The UTCI is the
+    equivalent temperature for the environment derived from a reference environment.
+    It is defined as the air temperature of the reference environment which produces
+    the same strain index value in comparison with the reference individual's response
+    to the real
+    environment. It is regarded as one of the most comprehensive indices for
+    calculating heat stress in outdoor spaces. The parameters that are taken into
+    account for calculating
+    UTCI involve dry-bulb temperature, mean radiation temperature, the pressure of
+    water vapor or relative humidity, and wind speed (at the elevation of 10 m above the
+    ground) [7]_.
+
+    Parameters
+    ----------
+    tdb : float
+        dry bulb air temperature, default in [°C] in [°F] if `units` = 'IP'
+    tr : float
+        mean radiant temperature, default in [°C] in [°F] if `units` = 'IP'
+    v : float
+        wind speed 10m above ground level, default in [m/s] in [fps] if `units` = 'IP'
+    rh : float
+        relative humidity, [%]
+    units: str default="SI"
+        select the SI (International System of Units) or the IP (Imperial Units) system.
+    return_stress_category : boolean default False
+        if True returns the UTCI categorized in terms of thermal stress.
+
+    Returns
+    -------
+    utci : float
+         Universal Thermal Climate Index, [°C] or in [°F]
+    stress_category : str
+         UTCI categorized in terms of thermal stress [9]_.
+
+    Notes
+    -----
+    You can use this function to calculate the Universal Thermal Climate Index (`UTCI`)
+    The applicability wind speed value must be between 0.5 and 17 m/s.
+
+    .. _UTCI: http://www.utci.org/utcineu/utcineu.php
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from pythermalcomfort.models import utci
+        >>> utci(tdb=25, tr=25, v=1.0, rh=50)
+        24.6
+
+        >>> # for users who wants to use the IP system
+        >>> utci(tdb=77, tr=77, v=3.28, rh=50, units='ip')
+        76.4
+
+        >>> # for users who wants to get stress category
+        >>> utci(tdb=25, tr=25, v=1.0, rh=50, return_stress_category=True)
+        {"utci": 24.6, "stress_category": "no thermal stress"}
+
+    Raises
+    ------
+    ValueError
+        Raised if the input are outside the Standard's applicability limits
+
+    """
+
+    if units.lower() == "ip":
+        tdb, tr, v = units_converter(tdb=tdb, tr=tr, v=v)
+
+    check_standard_compliance(standard="utci", tdb=tdb, tr=tr, v=v)
+
+    def exponential(t_db):
+        g = [
+            -2836.5744,
+            -6028.076559,
+            19.54263612,
+            -0.02737830188,
+            0.000016261698,
+            (7.0229056 * (10 ** (-10))),
+            (-1.8680009 * (10 ** (-13))),
+        ]
+        tk = t_db + 273.15  # air temp in K
+        es = 2.7150305 * math.log1p(tk)
+        for count, i in enumerate(g):
+            es = es + (i * (tk ** (count - 2)))
+        es = math.exp(es) * 0.01  # convert Pa to hPa
+        return es
+
+    # Do a series of checks to be sure that the input values are within the bounds
+    # accepted by the model.
+    if (
+        (tdb < -50.0)
+        or (tdb > 50.0)
+        or (tr - tdb < -30.0)
+        or (tr - tdb > 70.0)
+        or (v < 0.5)
+        or (v > 17)
+    ):
+        raise ValueError(
+            "The value you entered are outside the equation applicability limits"
+        )
+
+    eh_pa = exponential(tdb) * (rh / 100.0)
+    delta_t_tr = tr - tdb
+    pa = eh_pa / 10.0  # convert vapour pressure to kPa
+
+    utci_approx = utci_optimized(tdb, v, delta_t_tr, pa)
+
+    if utci_approx < -40:
+        stress_category = "extreme cold stress"
+    elif utci_approx < -27:
+        stress_category = "very strong cold stress"
+    elif utci_approx < -13:
+        stress_category = "strong cold stress"
+    elif utci_approx < 0:
+        stress_category = "moderate cold stress"
+    elif utci_approx < 9:
+        stress_category = "slight cold stress"
+    elif utci_approx < 26:
+        stress_category = "no thermal stress"
+    elif utci_approx < 32:
+        stress_category = "moderate heat stress"
+    elif utci_approx < 38:
+        stress_category = "strong heat stress"
+    elif utci_approx < 46:
+        stress_category = "very strong heat stress"
+    else:
+        stress_category = "extreme heat stress"
+
+    if units.lower() == "ip":
+        utci_approx = units_converter(tmp=utci_approx, from_units="si")[0]
+
+    if return_stress_category:
+        return {"utci": round(utci_approx, 1), "stress_category": stress_category}
+    else:
+        return round(utci_approx, 1)
+
+
+def clo_tout(tout, units="SI"):
+    """Representative clothing insulation Icl as a function of outdoor air temperature
+    at 06:00 a.m [4]_.
+
+    Parameters
+    ----------
+    tout : float
+        outdoor air temperature at 06:00 a.m., default in [°C] in [°F] if `units` = 'IP'
+    units: str default="SI"
+        select the SI (International System of Units) or the IP (Imperial Units) system.
+
+    Returns
+    -------
+    clo : float
+         Representative clothing insulation Icl, [clo]
+
+    Notes
+    -----
+    The ASHRAE 55 2017 states that it is acceptable to determine the clothing
+    insulation Icl using this equation in mechanically conditioned buildings [1]_.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from pythermalcomfort.models import clo_tout
+        >>> clo_tout(tout=27)
+        0.46
+
+    """
+    if units.lower() == "ip":
+        tout = units_converter(tmp=tout)[0]
+
+    if tout < -5:
+        clo = 1
+    elif tout < 5:
+        clo = 0.818 - 0.0364 * tout
+    elif tout < 26:
+        clo = 10 ** (-0.1635 - 0.0066 * tout)
+    else:
+        clo = 0.46
+
+    return round(clo, 2)
+
+
+def vertical_tmp_grad_ppd(tdb, tr, vr, rh, met, clo, vertical_tmp_grad, units="SI"):
+    """Calculates the percentage of thermally dissatisfied people with a vertical
+    temperature gradient between feet and head [1]_.
+    This equation is only applicable for vr < 0.2 m/s (40 fps).
+
+    Parameters
+    ----------
+    tdb : float
+        dry bulb air temperature, default in [°C] in [°F] if `units` = 'IP'
+
+        Note: The air temperature is the average value over two heights: 0.6 m (24 in.)
+        and 1.1 m (43 in.) for seated occupants
+        and 1.1 m (43 in.) and 1.7 m (67 in.) for standing occupants.
+    tr : float
+        mean radiant temperature, default in [°C] in [°F] if `units` = 'IP'
+    vr : float
+        relative air speed, default in [m/s] in [fps] if `units` = 'IP'
+
+        Note: vr is the relative air speed caused by body movement and not the air
+        speed measured by the air speed sensor. The relative air speed is the sum of the
+        average air speed measured by the sensor plus the activity-generated air speed
+        (Vag). Where Vag is the activity-generated air speed caused by motion of
+        individual body parts. vr can be calculated using the function
+        :py:meth:`pythermalcomfort.utilities.v_relative`.
+    rh : float
+        relative humidity, [%]
+    met : float
+        metabolic rate, [met]
+    clo : float
+        clothing insulation, [clo]
+
+        Note: The activity as well as the air speed modify the insulation characteristics
+        of the clothing and the adjacent air layer. Consequently the ISO 7730 states that
+        the clothing insulation shall be corrected [2]_. The ASHRAE 55 Standard corrects
+        for the effect of the body movement for met equal or higher than 1.2 met using
+        the equation clo = Icl × (0.6 + 0.4/met) The dynamic clothing insulation, clo,
+        can be calculated using the function
+        :py:meth:`pythermalcomfort.utilities.clo_dynamic`.
+    vertical_tmp_grad : float
+        vertical temperature gradient between the feet and the head, default in [°C/m]
+        in [°F/ft] if `units` = 'IP'
+    units: str default="SI"
+        select the SI (International System of Units) or the IP (Imperial Units) system.
+
+    Returns
+    -------
+    PPD_vg: float
+        Predicted Percentage of Dissatisfied occupants with vertical temperature
+        gradient, [%]
+    Acceptability: bol
+        The ASHRAE 55 2017 standard defines that the value of air speed at the ankle
+        level is acceptable if PPD_ad is lower or equal than 5 %
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from pythermalcomfort.models import vertical_tmp_grad_ppd
+        >>> results = vertical_tmp_grad_ppd(25, 25, 0.1, 50, 1.2, 0.5, 7)
+        >>> print(results)
+        {'PPD_vg': 12.6, 'Acceptability': False}
+
+    """
+    if units.lower() == "ip":
+        tdb, tr, vr = units_converter(tdb=tdb, tr=tr, v=vr)
+        vertical_tmp_grad = vertical_tmp_grad / 1.8 * 3.28
+
+    check_standard_compliance(
+        standard="ashrae", tdb=tdb, tr=tr, v_limited=vr, rh=rh, met=met, clo=clo
+    )
+
+    tsv = pmv(tdb, tr, vr, rh, met, clo, standard="ashrae")
+    numerator = math.exp(0.13 * (tsv - 1.91) ** 2 + 0.15 * vertical_tmp_grad - 1.6)
+    ppd_val = round((numerator / (1 + numerator) - 0.345) * 100, 1)
+    acceptability = ppd_val <= 5
+    return {"PPD_vg": ppd_val, "Acceptability": acceptability}
+
+
+def ankle_draft(tdb, tr, vr, rh, met, clo, v_ankle, units="SI"):
+    """
+    Calculates the percentage of thermally dissatisfied people with the ankle draft (
+    0.1 m) above floor level [1]_.
+    This equation is only applicable for vr < 0.2 m/s (40 fps).
+
+    Parameters
+    ----------
+    tdb : float
+        dry bulb air temperature, default in [°C] in [°F] if `units` = 'IP'
+
+        Note: The air temperature is the average value over two heights: 0.6 m (24 in.)
+        and 1.1 m (43 in.) for seated occupants
+        and 1.1 m (43 in.) and 1.7 m (67 in.) for standing occupants.
+    tr : float
+        mean radiant temperature, default in [°C] in [°F] if `units` = 'IP'
+    vr : float
+        relative air speed, default in [m/s] in [fps] if `units` = 'IP'
+
+        Note: vr is the relative air speed caused by body movement and not the air
+        speed measured by the air speed sensor. The relative air speed is the sum of the
+        average air speed measured by the sensor plus the activity-generated air speed
+        (Vag). Where Vag is the activity-generated air speed caused by motion of
+        individual body parts. vr can be calculated using the function
+        :py:meth:`pythermalcomfort.utilities.v_relative`.
+    rh : float
+        relative humidity, [%]
+    met : float
+        metabolic rate, [met]
+    clo : float
+        clothing insulation, [clo]
+
+        Note: The activity as well as the air speed modify the insulation characteristics
+        of the clothing and the adjacent air layer. Consequently the ISO 7730 states that
+        the clothing insulation shall be corrected [2]_. The ASHRAE 55 Standard corrects
+        for the effect of the body movement for met equal or higher than 1.2 met using
+        the equation clo = Icl × (0.6 + 0.4/met) The dynamic clothing insulation, clo,
+        can be calculated using the function
+        :py:meth:`pythermalcomfort.utilities.clo_dynamic`.
+    v_ankle : float
+        air speed at the 0.1 m (4 in.) above the floor, default in [m/s] in [fps] if
+        `units` = 'IP'
+    units: str default="SI"
+        select the SI (International System of Units) or the IP (Imperial Units) system.
+
+    Returns
+    -------
+    PPD_ad: float
+        Predicted Percentage of Dissatisfied occupants with ankle draft, [%]
+    Acceptability: bol
+        The ASHRAE 55 2017 standard defines that the value of air speed at the ankle
+        level is acceptable if PPD_ad is lower or equal than 20 %
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from pythermalcomfort.models import ankle_draft
+        >>> results = ankle_draft(25, 25, 0.2, 50, 1.2, 0.5, 0.3, units="SI")
+        >>> print(results)
+        {'PPD_ad': 18.6, 'Acceptability': True}
+
+    """
+    if units.lower() == "ip":
+        tdb, tr, vr, v_ankle = units_converter(tdb=tdb, tr=tr, v=vr, vel=v_ankle)
+
+    check_standard_compliance(
+        standard="ashrae", tdb=tdb, tr=tr, v_limited=vr, rh=rh, met=met, clo=clo
+    )
+
+    tsv = pmv(tdb, tr, vr, rh, met, clo, standard="ashrae")
+    ppd_val = round(
+        math.exp(-2.58 + 3.05 * v_ankle - 1.06 * tsv)
+        / (1 + math.exp(-2.58 + 3.05 * v_ankle - 1.06 * tsv))
+        * 100,
+        1,
+    )
+    acceptability = ppd_val <= 20
+    return {"PPD_ad": ppd_val, "Acceptability": acceptability}
+
+
+def solar_gain(
+    sol_altitude,
+    sharp,
+    sol_radiation_dir,
+    sol_transmittance,
+    f_svv,
+    f_bes,
+    asw=0.7,
+    posture="seated",
+    floor_reflectance=0.6,
+):
+    """
+    Calculates the solar gain to the human body using the Effective Radiant Field (
+    ERF) [1]_. The ERF is a measure of the net energy flux to or from the human body.
+    ERF is expressed in W over human body surface area [w/m2]. In addition,
+    it calculates the delta mean radiant temperature. Which is the amount by which
+    the mean radiant
+    temperature of the space should be increased if no solar radiation is present.
+
+    Parameters
+    ----------
+    sol_altitude : float
+        Solar altitude, degrees from horizontal [deg]. Ranges between 0 and 90.
+    sharp : float
+        Solar horizontal angle relative to the front of the person (SHARP) [deg].
+        Ranges between 0 and 180 and is symmetrical on either side. Zero (0) degrees
+        represents direct-beam radiation from the front, 90 degrees represents
+        direct-beam radiation from the side, and 180 degrees rep- resent direct-beam
+        radiation from the back. SHARP is the angle between the sun and the person
+        only. Orientation relative to compass or to room is not included in SHARP.
+    posture : str
+        Default 'seated' list of available options 'standing', 'supine' or 'seated'
+    sol_radiation_dir : float
+        Direct-beam solar radiation, [W/m2]. Ranges between 200 and 1000. See Table
+        C2-3 of ASHRAE 55 2017 [1]_.
+    sol_transmittance : float
+        Total solar transmittance, ranges from 0 to 1. The total solar
+        transmittance of window systems, including glazing unit, blinds, and other
+        façade treatments, shall be determined using one of the following methods:
+        i) Provided by manufacturer or from the National Fenestration Rating
+        Council approved Lawrence Berkeley National Lab International Glazing
+        Database.
+        ii) Glazing unit plus venetian blinds or other complex or unique shades
+        shall be calculated using National Fenestration Rating Council approved
+        software or Lawrence Berkeley National Lab Complex Glazing Database.
+    f_svv : float
+        Fraction of sky-vault view fraction exposed to body, ranges from 0 to 1.
+        It can be calculated using the function
+        :py:meth:`pythermalcomfort.utilities.f_svv`.
+    f_bes : float
+        Fraction of the possible body surface exposed to sun, ranges from 0 to 1.
+        See Table C2-2 and equation C-7 ASHRAE 55 2017 [1]_.
+    asw: float
+        The average short-wave absorptivity of the occupant. It will range widely,
+        depending on the color of the occupant’s skin as well as the color and
+        amount of clothing covering the body.
+        A value of 0.7 shall be used unless more specific information about the
+        clothing or skin color of the occupants is available.
+        Note: Short-wave absorptivity typically ranges from 0.57 to 0.84, depending
+        on skin and clothing color. More information is available in Blum (1945).
+    floor_reflectance: float
+        Floor refectance. It is assumed to be constant and equal to 0.6.
+
+    Notes
+    -----
+    More information on the calculation procedure can be found in Appendix C of [1]_.
+
+    Returns
+    -------
+    erf: float
+        Solar gain to the human body using the Effective Radiant Field [W/m2]
+    delta_mrt: float
+        Delta mean radiant temperature. The amount by which the mean radiant
+        temperature of the space should be increased if no solar radiation is present.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from pythermalcomfort.models import solar_gain
+        >>> results = solar_gain(sol_altitude=0, sharp=120,
+        sol_radiation_dir=800, sol_transmittance=0.5, f_svv=0.5, f_bes=0.5,
+        asw=0.7, posture='seated')
+        >>> print(results)
+        {'erf': 42.9, 'delta_mrt': 10.3}
+
+    """
+
+    posture = posture.lower()
+    if posture not in ["standing", "supine", "seated"]:
+        raise ValueError("Posture has to be either standing, supine or seated")
+
+    def find_span(arr, x):
+        for i in range(0, len(arr)):
+            if arr[i + 1] >= x >= arr[i]:
+                return i
+        return -1
+
+    deg_to_rad = 0.0174532925
+    hr = 6
+    i_diff = 0.2 * sol_radiation_dir
+
+    # fp is the projected area factor
+    fp_table = [
+        [0.35, 0.35, 0.314, 0.258, 0.206, 0.144, 0.082],
+        [0.342, 0.342, 0.31, 0.252, 0.2, 0.14, 0.082],
+        [0.33, 0.33, 0.3, 0.244, 0.19, 0.132, 0.082],
+        [0.31, 0.31, 0.275, 0.228, 0.175, 0.124, 0.082],
+        [0.283, 0.283, 0.251, 0.208, 0.16, 0.114, 0.082],
+        [0.252, 0.252, 0.228, 0.188, 0.15, 0.108, 0.082],
+        [0.23, 0.23, 0.214, 0.18, 0.148, 0.108, 0.082],
+        [0.242, 0.242, 0.222, 0.18, 0.153, 0.112, 0.082],
+        [0.274, 0.274, 0.245, 0.203, 0.165, 0.116, 0.082],
+        [0.304, 0.304, 0.27, 0.22, 0.174, 0.121, 0.082],
+        [0.328, 0.328, 0.29, 0.234, 0.183, 0.125, 0.082],
+        [0.344, 0.344, 0.304, 0.244, 0.19, 0.128, 0.082],
+        [0.347, 0.347, 0.308, 0.246, 0.191, 0.128, 0.082],
+    ]
+    if posture == "seated":
+        fp_table = [
+            [0.29, 0.324, 0.305, 0.303, 0.262, 0.224, 0.177],
+            [0.292, 0.328, 0.294, 0.288, 0.268, 0.227, 0.177],
+            [0.288, 0.332, 0.298, 0.29, 0.264, 0.222, 0.177],
+            [0.274, 0.326, 0.294, 0.289, 0.252, 0.214, 0.177],
+            [0.254, 0.308, 0.28, 0.276, 0.241, 0.202, 0.177],
+            [0.23, 0.282, 0.262, 0.26, 0.233, 0.193, 0.177],
+            [0.216, 0.26, 0.248, 0.244, 0.22, 0.186, 0.177],
+            [0.234, 0.258, 0.236, 0.227, 0.208, 0.18, 0.177],
+            [0.262, 0.26, 0.224, 0.208, 0.196, 0.176, 0.177],
+            [0.28, 0.26, 0.21, 0.192, 0.184, 0.17, 0.177],
+            [0.298, 0.256, 0.194, 0.174, 0.168, 0.168, 0.177],
+            [0.306, 0.25, 0.18, 0.156, 0.156, 0.166, 0.177],
+            [0.3, 0.24, 0.168, 0.152, 0.152, 0.164, 0.177],
+        ]
+
+    if posture == "supine":
+        sharp, sol_altitude = transpose_sharp_altitude(sharp, sol_altitude)
+
+    alt_range = [0, 15, 30, 45, 60, 75, 90]
+    az_range = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180]
+    alt_i = find_span(alt_range, sol_altitude)
+    az_i = find_span(az_range, sharp)
+    fp11 = fp_table[az_i][alt_i]
+    fp12 = fp_table[az_i][alt_i + 1]
+    fp21 = fp_table[az_i + 1][alt_i]
+    fp22 = fp_table[az_i + 1][alt_i + 1]
+    az1 = az_range[az_i]
+    az2 = az_range[az_i + 1]
+    alt1 = alt_range[alt_i]
+    alt2 = alt_range[alt_i + 1]
+    fp = fp11 * (az2 - sharp) * (alt2 - sol_altitude)
+    fp += fp21 * (sharp - az1) * (alt2 - sol_altitude)
+    fp += fp12 * (az2 - sharp) * (sol_altitude - alt1)
+    fp += fp22 * (sharp - az1) * (sol_altitude - alt1)
+    fp /= (az2 - az1) * (alt2 - alt1)
+
+    f_eff = 0.725  # fraction of the body surface exposed to environmental radiation
+    if posture == "seated":
+        f_eff = 0.696
+
+    sw_abs = asw
+    lw_abs = 0.95
+
+    e_diff = f_eff * f_svv * 0.5 * sol_transmittance * i_diff
+    e_direct = f_eff * fp * sol_transmittance * f_bes * sol_radiation_dir
+    e_reflected = (
+        f_eff
+        * f_svv
+        * 0.5
+        * sol_transmittance
+        * (sol_radiation_dir * math.sin(sol_altitude * deg_to_rad) + i_diff)
+        * floor_reflectance
+    )
+
+    e_solar = e_diff + e_direct + e_reflected
+    erf = e_solar * (sw_abs / lw_abs)
+    d_mrt = erf / (hr * f_eff)
+
+    return {"erf": round(erf, 1), "delta_mrt": round(d_mrt, 1)}
+
+
+def phs(tdb, tr, v, rh, met, clo, posture, wme=0, **kwargs):
+    """
+    Calculates the Predicted Heat Strain (PHS) index based in compliace with the ISO
+    7933:2004 Standard [8]_. The ISO 7933 provides a method for the analytical evaluation
+    and interpretation of the thermal stress experienced by a subject in a hot
+    environment. It describes a method for predicting the sweat rate and the internal
+    core temperature that the human body will develop in response to the working
+    conditions.
+
+    The PHS model can be used to predict the: heat by respiratory convection, heat flow
+    by respiratory evaporation, steady state mean skin temperature, instantaneous value
+    of skin temperature, heat accumulation associated with the metabolic rate, maximum
+    evaporative heat flow at the skin surface, predicted sweat rate, predicted evaporative
+    heat flow, and rectal temperature
+
+    Parameters
+    ----------
+    tdb : float
+        dry bulb air temperature, default in [°C]
+    tr : float
+        mean radiant temperature, default in [°C]
+    v : float
+        air speed, default in [m/s]
+    rh : float
+        relative humidity, [%]
+    met : float
+        metabolic rate, [W/(m2)]
+    clo : float
+        clothing insulation, [clo]
+    posture:
+        a numeric value presenting posture of person [sitting=1, standing=2, crouching=3]
+    wme : float
+        external work, [W/(m2)] default 0
+
+    Other Parameters
+    ----------------
+    i_mst : float, default 0.38
+        static moisture permeability index, [dimensionless]
+    a_p : float, default 0.54
+        fraction of the body surface covered by the reflective clothing, [dimensionless]
+    drink : float, default 1
+        1 if workers can drink freely, 0 otherwise
+    weight : float, default 75
+        body weight, [kg]
+    height : float, default 1.8
+        height, [m]
+    walk_sp : float, default 0
+        walking speed, [m/s]
+    theta : float, default 0
+        angle between walking direction and wind direction [degrees]
+    acclimatized : float, default 100
+        100 if acclimatised subject, 0 otherwise
+    duration : float, default 480
+        duration of the work sequence, [minutes]
+    f_r : float, default 0.97
+        emissivity of the reflective clothing, [dimensionless]
+        Some reference values :py:meth:`pythermalcomfort.utilities.f_r_garments`.
+    t_sk : float, default 34.1
+        mean skin temperature when worker starts working, [°C]
+    t_cr : float, default 36.8
+        mean core temperature when worker starts working, [°C]
+    t_re : float, default False
+        mean rectal temperature when worker starts working, [°C]
+    t_cr_eq : float, default False
+        mean core temperature as a funtion of met when worker starts working, [°C]
+    sweat_rate : float, default 0
+
+    Returns
+    -------
+    t_re : float
+        rectal temperature, [°C]
+    d_lim_loss_50 : float
+        maximum allowable exposure time for water loss, mean subject, [minutes]
+    d_lim_loss_95 : float
+        maximum allowable exposure time for water loss, 95% of the working population, [minutes]
+    d_lim_t_re : float
+        maximum allowable exposure time for heat storage, [minutes]
+    water_loss : float
+        maximum water loss, [g]
+
+    Examples
+    --------
+    .. code-block:: python
+
+        >>> from pythermalcomfort.models import phs
+        >>> results = phs(tdb=40, tr=40, rh=33.85, v=0.3, met=150, clo=0.5, posture=2)
+        >>> print(results)
+        {'t_re': 37.5, 'd_lim_loss_50': 440, 'd_lim_loss_95': 298, 'd_lim_t_re': 480, 'water_loss': 6166.0}
+
+    """
+    default_kwargs = {
+        "i_mst": 0.38,
+        "a_p": 0.54,
+        "drink": 1,
+        "weight": 75,
+        "height": 1.8,
+        "walk_sp": 0,
+        "theta": 0,
+        "acclimatized": 100,
+        "duration": 480,
+        "f_r": 0.97,
+        "t_sk": 34.1,
+        "t_cr": 36.8,
+        "t_re": False,
+        "t_cr_eq": False,
+        "sweat_rate": 0,
+    }
+    kwargs = {**default_kwargs, **kwargs}
+
+    i_mst = kwargs["i_mst"]
+    a_p = kwargs["a_p"]
+    drink = kwargs["drink"]
+    weight = kwargs["weight"]
+    height = kwargs["height"]
+    walk_sp = kwargs["walk_sp"]
+    theta = kwargs["theta"]
+    acclimatized = kwargs["acclimatized"]
+    duration = kwargs["duration"]
+    f_r = kwargs["f_r"]
+    t_sk = kwargs["t_sk"]
+    t_cr = kwargs["t_cr"]
+    t_re = kwargs["t_re"]
+    t_cr_eq = kwargs["t_cr_eq"]
+    sweat_rate = kwargs["sweat_rate"]
+
+    p_a = p_sat(tdb) / 1000 * rh / 100
+
+    check_standard_compliance(
+        standard="ISO7933", tdb=tdb, tr=tr, v=v, rh=rh, met=met, clo=clo
+    )
+
+    if not t_re:
+        t_re = t_cr
+    if not t_cr_eq:
+        t_cr_eq = t_cr
+
+    t_re, d_lim_loss_50, d_lim_loss_95, d_lim_t_re, sw_tot_g = phs_optimized(
+        tdb,
+        tr,
+        v,
+        p_a,
+        met,
+        clo,
+        posture,
+        wme,
+        i_mst,
+        a_p,
+        drink,
+        weight,
+        height,
+        walk_sp,
+        theta,
+        acclimatized,
+        duration,
+        f_r,
+        t_sk,
+        t_cr,
+        t_re,
+        t_cr_eq,
+        sweat_rate,
+    )
+
+    return {
+        "t_re": round(t_re, 1),
+        "d_lim_loss_50": d_lim_loss_50,
+        "d_lim_loss_95": d_lim_loss_95,
+        "d_lim_t_re": d_lim_t_re,
+        "water_loss": round(sw_tot_g, 0),
+    }
+
+
+# add the following models:
+# todo radiant_tmp_asymmetry
+# todo draft
+# todo floor_surface_tmp
+# more info here: https://www.rdocumentation.org/packages/comf/versions/0.1.9
+# more info here: https://rdrr.io/cran/comf/man/
