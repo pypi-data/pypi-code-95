@@ -1,0 +1,8 @@
+ConfigTopic = "/wisepaas/scada/{0}/cfg"
+DataTopic = "/wisepaas/scada/{0}/data"
+NodeConnTopic = "/wisepaas/scada/{0}/conn"
+DeviceConnTopic = "/wisepaas/scada/{0}/{1}/conn"
+NodeCmdTopic = "/wisepaas/scada/{0}/cmd"
+DeviceCmdTopic = "/wisepaas/scada/{0}/{1}/cmd"
+AckTopic = "/wisepaas/scada/{0}/ack"
+CfgAckTopic = "/wisepaas/scada/{0}/cfgack"
