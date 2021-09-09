@@ -1,0 +1,8 @@
+"""
+@author: Nicklas Ansman-Giertz
+@contact: U{ngiertz@splunk.com<mailto:ngiertz@splunk.com>}
+@since: 2011-11-23
+"""
+from . import log
+
+log.setup_logger(debug=True)
