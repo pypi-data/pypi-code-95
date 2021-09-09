@@ -1,0 +1,2 @@
+class InValidMessageHeader(Exception):
+    pass
