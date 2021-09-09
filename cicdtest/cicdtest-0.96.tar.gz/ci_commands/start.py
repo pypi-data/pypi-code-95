@@ -1,0 +1,13 @@
+from crontab import CronTab
+import click
+
+@click.command()
+def start():
+    '''
+    For initiating the pull operation in background
+   
+    '''
+
+    my_cron = CronTab(user=True)
+    job = my_cron.new(command='/home/kush/.local/bin/buildpan init')
+    job.minute.every(1)
