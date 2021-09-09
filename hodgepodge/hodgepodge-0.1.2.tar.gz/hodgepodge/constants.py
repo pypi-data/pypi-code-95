@@ -1,0 +1,9 @@
+#: File I/O.
+DEFAULT_BLOCK_SIZE_FOR_FILE_IO = 8192
+
+#: File search - mostly.
+FOLLOW_MOUNTS_BY_DEFAULT = True
+FOLLOW_SYMLINKS_BY_DEFAULT = False
+
+#: Hashes - mostly.
+INCLUDE_HASHES_BY_DEFAULT = True
