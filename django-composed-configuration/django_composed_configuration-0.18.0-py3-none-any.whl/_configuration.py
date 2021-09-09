@@ -1,0 +1,109 @@
+from typing import List, Optional, Tuple
+
+from configurations import values
+
+from ._allauth import AllauthMixin
+from ._base import ComposedConfiguration
+from ._celery import CeleryMixin
+from ._cors import CorsMixin
+from ._database import DatabaseMixin
+from ._debug import DebugMixin
+from ._django import DjangoMixin
+from ._docker import _AlwaysContains, _is_docker
+from ._email import ConsoleEmailMixin, SmtpEmailMixin
+from ._extensions import ExtensionsMixin
+from ._filter import FilterMixin
+from ._girder_utils import GirderUtilsMixin
+from ._https import HttpsMixin
+from ._logging import LoggingMixin
+from ._rest_framework import RestFrameworkMixin
+from ._sentry import SentryMixin
+from ._static import WhitenoiseStaticFileMixin
+from ._storage import MinioStorageMixin, S3StorageMixin
+
+
+# Subclasses are loaded in last to first ordering
+class _BaseConfiguration(
+    GirderUtilsMixin,
+    ExtensionsMixin,
+    CeleryMixin,
+    RestFrameworkMixin,
+    FilterMixin,
+    # CorsMixin must be loaded after WhitenoiseStaticFileMixin
+    CorsMixin,
+    WhitenoiseStaticFileMixin,
+    DatabaseMixin,
+    LoggingMixin,
+    AllauthMixin,
+    # DjangoMixin should be loaded first
+    DjangoMixin,
+    ComposedConfiguration,
+):
+    pass
+
+
+class DevelopmentBaseConfiguration(
+    DebugMixin, ConsoleEmailMixin, MinioStorageMixin, _BaseConfiguration
+):
+    DEBUG = True
+    SECRET_KEY = 'insecuresecret'
+
+    ALLOWED_HOSTS = values.ListValue(['localhost', '127.0.0.1'])
+    CORS_ORIGIN_REGEX_WHITELIST = values.ListValue(
+        [r'^https?://localhost:\d+$', r'^https?://127\.0\.0\.1:\d+$']
+    )
+
+    # When in Docker, the bridge network sends requests from the host machine exclusively via a
+    # dedicated IP address. Since there's no way to determine the real origin address,
+    # consider any IP address (though actually this will only be the single dedicated address) to
+    # be internal. This relies on the host to set up appropriate firewalls for Docker, to prevent
+    # access from non-internal addresses.
+    INTERNAL_IPS = _AlwaysContains() if _is_docker() else ['127.0.0.1']
+    # Setting this allows MinIO to work through network namespace partitions
+    # (e.g. when running within Docker Compose)
+    MINIO_STORAGE_MEDIA_URL = values.Value(None)
+
+
+class TestingBaseConfiguration(MinioStorageMixin, _BaseConfiguration):
+    SECRET_KEY = 'testingsecret'
+
+    # Testing will add 'testserver' to ALLOWED_HOSTS
+    ALLOWED_HOSTS: List[str] = []
+
+    MINIO_STORAGE_MEDIA_BUCKET_NAME = 'test-django-storage'
+
+    # To generate static file URLs in testing (where DEBUG is False),
+    # CompressedManifestStaticFilesStorage requires collectstatic to be run,
+    # so use an alternative which does not require that
+    STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
+
+    # Testing will set EMAIL_BACKEND to use the memory backend
+
+
+class ProductionBaseConfiguration(
+    SentryMixin, SmtpEmailMixin, S3StorageMixin, HttpsMixin, _BaseConfiguration
+):
+    pass
+
+
+# Separate these settings for potential reuse, but this may not be usable enough to make public
+# yet, given the fragility of ensuring that this is added as a superclass in the correct order.
+class _HerokuMixin:
+    # Use different env var names (with no DJANGO_ prefix) for services that Heroku auto-injects
+    DATABASES = values.DatabaseURLValue(
+        environ_name='DATABASE_URL',
+        environ_prefix=None,
+        environ_required=True,
+        engine='django.db.backends.postgresql',
+        conn_max_age=600,
+        ssl_require=True,
+    )
+    CELERY_BROKER_URL = values.Value(
+        environ_name='CLOUDAMQP_URL', environ_prefix=None, environ_required=True
+    )
+    # https://help.heroku.com/J2R1S4T8/can-heroku-force-an-application-to-use-ssl-tls
+    SECURE_PROXY_SSL_HEADER: Optional[Tuple[str, str]] = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+
+class HerokuProductionBaseConfiguration(_HerokuMixin, ProductionBaseConfiguration):
+    pass
