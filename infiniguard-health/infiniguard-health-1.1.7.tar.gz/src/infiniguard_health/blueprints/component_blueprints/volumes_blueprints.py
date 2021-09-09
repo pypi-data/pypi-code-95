@@ -1,0 +1,23 @@
+VOLUMES_BLUEPRINT = {
+    "default":
+        [
+            "BOOT",
+            "BDSS_JRN",
+            "BPMD_JRN",
+            "BPMD_MD1",
+            "BDSS_MD1",
+            "BPMD_1",
+            "BULK01",
+            "BULK02",
+            "BULK03",
+            "BULK04",
+            "BULK05",
+            "BULK06",
+            "BULK07",
+            "BULK08",
+            "BULK09",
+            "BULK10",
+            "BULK11",
+            "BULK12",
+        ]
+}

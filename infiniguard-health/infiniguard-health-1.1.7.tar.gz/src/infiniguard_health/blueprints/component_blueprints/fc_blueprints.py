@@ -1,0 +1,46 @@
+FC_CARD_SLOT_2 = ["fc2p1",
+                  "fc2p2"]
+
+FC_CARD_SLOT_3 = ["fc3p1",
+                  "fc3p2"]
+
+BACKEND_PORTS = FC_CARD_SLOT_2 + FC_CARD_SLOT_3
+
+FC_CARD_SLOT_4 = ["fc4p1",
+                  "fc4p2",
+                  "fc4p3",
+                  "fc4p4"]
+
+FC_CARD_SLOT_5 = ["fc5p1",
+                  "fc5p2",
+                  "fc5p3",
+                  "fc5p4"]
+
+FC_CARD_SLOT_7 = ["fc7p1",
+                  "fc7p2",
+                  "fc7p3",
+                  "fc7p4"]
+
+FC_BLUEPRINT = {
+    "default": BACKEND_PORTS + FC_CARD_SLOT_4 + FC_CARD_SLOT_5 + FC_CARD_SLOT_7,
+    "NOD-91101": BACKEND_PORTS + FC_CARD_SLOT_4 + FC_CARD_SLOT_5 + FC_CARD_SLOT_7,
+    "NOD-91142": BACKEND_PORTS,
+    "NOD-91111": BACKEND_PORTS + FC_CARD_SLOT_5,
+    "NOD-91121": BACKEND_PORTS + FC_CARD_SLOT_5,
+    "NOD-91131": BACKEND_PORTS,
+    "NOD-91141": BACKEND_PORTS,
+    "NOD-91151": BACKEND_PORTS,
+    "NOD-91161": BACKEND_PORTS,
+    "NOD-91171": BACKEND_PORTS + FC_CARD_SLOT_5,
+    "NOD-91181": BACKEND_PORTS + FC_CARD_SLOT_4 + FC_CARD_SLOT_5,
+    "NOD-91191": BACKEND_PORTS + FC_CARD_SLOT_4 + FC_CARD_SLOT_5,
+    "NOD-92112": BACKEND_PORTS + FC_CARD_SLOT_5,
+    "NOD-92142": BACKEND_PORTS,
+    "NOD-92101": BACKEND_PORTS + FC_CARD_SLOT_4 + FC_CARD_SLOT_5 + FC_CARD_SLOT_7,
+    "NOD-92111": BACKEND_PORTS + FC_CARD_SLOT_5,
+    "NOD-92121": BACKEND_PORTS + FC_CARD_SLOT_5,
+    "NOD-92131": BACKEND_PORTS,
+    "NOD-92141": BACKEND_PORTS,
+    "NOD-92181": BACKEND_PORTS + FC_CARD_SLOT_5 + FC_CARD_SLOT_7,
+    "NOD-92191": BACKEND_PORTS + FC_CARD_SLOT_4 + FC_CARD_SLOT_7,
+}
