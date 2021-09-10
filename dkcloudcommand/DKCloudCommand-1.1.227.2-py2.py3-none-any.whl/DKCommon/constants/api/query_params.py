@@ -1,0 +1,14 @@
+# Expansion parameters
+EXPAND_CREATED_BY = "expand_created_by"
+EXPAND_PRIMARY_COMPANY = "expand_primary_company"
+EXCLUDE_ROLES = "exclude_roles"
+# Pagination parameters
+PAGE = "page"
+COUNT = "count"
+# Filtering parameters
+GET_ALL = "get_all"
+ORDER = "order"
+SORT_BY = "sort_by"
+ACTIVE = "active"
+NAME = "name"
+FIELDS = "fields"
