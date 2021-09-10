@@ -1,0 +1,2 @@
+def sayitnow():
+  print("auth")
