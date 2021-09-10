@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+"""Locate, analyze, expose and catalogue dataset entries.
+
+The FilePropertiesTable class contains the minimal information about the file
+as well as basic statistical measurements.
+
+Subclasses of this table can be created adding extra columns.
+
+The experiment.CompressionExperiment class takes an instance of FilePropertiesTable
+to know what files the experiment should be run on.
+"""
+__author__ = "Miguel Hernández-Cabronero"
+__since__ = "2019/09/18"
+
+import os
+import hashlib
+import ray
+import time
+import deprecation
+import glob
+
+import enb
+from enb import atable
+from enb import config
+from enb.atable import get_canonical_path
+
+options = enb.config.options
+
+# -------------------------- Begin configurable part
+
+# Hash algorithm used to verify file integrity
+hash_algorithm = "sha256"
+
+
+# -------------------------- End configurable part
+
+
+class UnkownPropertiesException(Exception):
+    pass
+
+
+class VersioningFailedException(Exception):
+    pass
+
+
+class FilePropertiesTable(atable.ATable):
+    """Table describing basic file properties (see decorated methods below).
+    """
+    version_name = "original"
+    hash_field_name = f"{hash_algorithm}"
+    index_name = "file_path"
+    base_dir = None
+    dataset_files_extension = "raw"
+
+    def __init__(self, csv_support_path=None, base_dir=None):
+        if csv_support_path is None and options.persistence_dir is not None:
+            csv_support_path = os.path.join(options.persistence_dir, f"persistence_{self.__class__.__name__}.csv")
+        super().__init__(index=FilePropertiesTable.index_name,
+                         csv_support_path=csv_support_path)
+        self.base_dir = base_dir if base_dir is not None else options.base_dataset_dir
+
+    def get_df(self, target_indices=None, target_columns=None, fill=True, overwrite=None, chunk_size=None):
+        target_indices = target_indices if target_indices is not None \
+            else enb.atable.get_all_input_files(ext=self.dataset_files_extension,
+                                                base_dataset_dir=self.base_dir)
+
+        return super().get_df(target_indices=target_indices,
+                              target_columns=target_columns,
+                              fill=fill, overwrite=overwrite,
+                              chunk_size=chunk_size)
+
+    def get_relative_path(self, file_path):
+        """Get the relative path. Overwritten to handle the versioned path.
+        """
+        file_path = os.path.abspath(file_path)
+        if self.base_dir is not None:
+            file_path = file_path.replace(os.path.abspath(self.base_dir), "")
+        assert file_path[0] == "/"
+        file_path = file_path[1:]
+        return file_path
+
+    @atable.column_function("corpus", label="Corpus name")
+    def set_corpus(self, file_path, row):
+        file_path = os.path.abspath(os.path.realpath(file_path))
+        if options.base_dataset_dir is not None:
+            file_dir = os.path.dirname(file_path)
+            if self.base_dir is not None:
+                file_dir = file_dir.replace(self.base_dir, "")
+            while file_dir and file_dir[0] == os.sep:
+                file_dir = file_dir[1:]
+        else:
+            file_dir = os.path.basename(os.path.dirname(os.path.abspath(os.path.realpath(file_path))))
+        if not file_dir:
+            file_dir = os.path.basename(os.path.dirname(os.path.abspath(os.path.realpath(file_path))))
+        row[_column_name] = os.path.basename(os.path.abspath(file_dir))
+
+    @atable.column_function("size_bytes", label="File size (bytes)")
+    def set_file_size(self, file_path, row):
+        """Store the original file size in row
+        :param file_path: path to the file to analyze
+        :param row: dictionary of previously computed values for this file_path (to speed up derived values)
+        """
+        row[_column_name] = os.path.getsize(file_path)
+
+    @atable.column_function(hash_field_name, label=f"{hash_field_name} hex digest")
+    def set_hash_digest(self, file_path, row):
+        """Store the hexdigest of file_path's contents, using hash_algorithm as configured.
+        :param file_path: path to the file to analyze
+        :param row: dictionary of previously computed values for this file_path (to speed up derived values)
+        """
+        hasher = hashlib.new(hash_algorithm)
+        with open(file_path, "rb") as f:
+            hasher.update(f.read())
+        row[_column_name] = hasher.hexdigest()
+
+
+class FileVersionTable(FilePropertiesTable):
+    """Table with the purpose of converting an input dataset into a destination folder.
+    This is accomplished by calling the version() method for all input files.
+    Subclasses may be defined so that they inherit from other classes and can apply more complex versioning.
+    """
+
+    def __init__(self, version_base_dir, version_name,
+                 original_properties_table=None,
+                 original_base_dir=None,
+                 csv_support_path=None,
+                 check_generated_files=True):
+        """
+        :param version_base_dir: path to the versioned base directory
+          (versioned directories preserve names and structure within
+          the base dir)
+
+        :param version_name: arbitrary name of this file version
+
+        :param original_base_dir: path to the original directory
+          (it must contain all indices requested later with self.get_df()).
+          If None, options.base_datset_dir is used
+
+        :param original_properties_table: instance of the file properties subclass
+          to be used when reading the original data to be versioned.
+          If None, a FilePropertiesTable is instanced automatically.
+
+        :param csv_support_path: path to the file where results (of the versioned data) are to be
+          long-term stored. If None, one is assigned by default based on options.persistence_dir.
+
+        :param check_generated_files: if True, the table checks that each call to version() produces
+          a file to output_path. Set to false to create arbitrarily named output files.
+        """
+        FilePropertiesTable.__init__(self, csv_support_path=csv_support_path,
+                                     base_dir=version_base_dir)
+
+        self.original_base_dir = os.path.abspath(os.path.realpath(original_base_dir)) \
+            if original_base_dir is not None else options.base_dataset_dir
+        self.original_properties_table = FilePropertiesTable(base_dir=self.original_base_dir) \
+            if original_properties_table is None else original_properties_table
+        self.version_base_dir = os.path.abspath(os.path.realpath(version_base_dir))
+        self.version_name = version_name
+        self.current_run_version_times = {}
+        self.check_generated_files = check_generated_files
+
+        assert self.version_base_dir is not None
+        os.makedirs(self.version_base_dir, exist_ok=True)
+
+    def version(self, input_path, output_path, row):
+        """Create a version of input_path and write it into output_path.
+
+        :param input_path: path to the file to be versioned
+        :param output_path: path where the version should be saved
+        :param row: metainformation available using super().get_df
+          for input_path
+
+        :return: if not None, the time in seconds it took to perform the (forward) versioning.
+        """
+        raise NotImplementedError
+
+    def get_default_target_indices(self):
+        return enb.atable.get_all_input_files(
+            base_dataset_dir=self.original_base_dir, ext=self.dataset_files_extension)
+
+    def original_to_versioned_path(self, original_path):
+        """Get the path of the versioned file corresponding to original_path.
+        This function will replicate the folder structure within self.original_base_dir.
+        """
+        versioned_path = os.path.abspath(original_path).replace(
+            os.path.abspath(self.original_base_dir), os.path.abspath(self.version_base_dir))
+
+        # If the dataset was linking to a dataset somewhere else in the filesystem,
+        # its relative path in the output dir is attempted to be discovered
+        # by inspecting self.original_base_dir and see if any matches are found.
+        if not os.path.abspath(original_path).startswith(os.path.abspath(self.original_base_dir)):
+            parts = os.path.abspath(original_path).split(os.sep)[1:]
+            for used_parts in range(1, len(parts) + 1):
+                if os.path.exists(os.path.join(self.original_base_dir, *parts[-used_parts:])):
+                    versioned_path = os.path.join(self.version_base_dir, *parts[-used_parts:])
+                    break
+            else:
+                raise Exception(f"Original path {original_path} not found in {self.original_base_dir}")
+
+        enb.logger.info(f"Transformed original path {original_path} into versioned path {versioned_path}")
+
+        return versioned_path
+
+    def get_df(self, target_indices=None, fill=True, overwrite=None,
+               target_columns=None):
+        """Create a version of target_indices (which must all be contained
+        in self.original_base_dir) into self.version_base_dir.
+        Then return a pandas DataFrame containing all given indices and defined columns.
+        If fill is True, missing values will be computed.
+        If fill and overwrite are True, all values will be computed, regardless of
+        whether they are previously present in the table.
+
+        :param overwrite: if True, version files are written even if they exist
+        :param target_indices: list of indices that are to be contained in the table,
+            or None to use the list of files returned by enb.atable.get_all_test_files()
+        :param target_columns: if not None, the list of columns that are considered for computation
+        """
+        target_indices = target_indices if target_indices is not None else self.get_default_target_indices()
+        overwrite = overwrite if overwrite is not None else options.force
+
+        assert all(index == enb.atable.get_canonical_path(index) for index in target_indices)
+        original_df = self.original_properties_table.get_df(target_indices=target_indices,
+                                                            target_columns=target_columns)
+
+        target_indices = [enb.atable.get_canonical_path(index)
+                          for index in target_indices]
+        version_indices = [self.original_to_versioned_path(index)
+                           for index in target_indices]
+
+        version_fun_id = ray.put(self.version)
+        overwrite_id = ray.put(overwrite)
+        original_df_id = ray.put(original_df)
+        options_id = ray.put(options)
+        versioning_result_ids = []
+        for original_path, version_path in zip(target_indices, version_indices):
+            input_path_id = ray.put(original_path)
+            output_path_id = ray.put(version_path)
+            versioning_result_ids.append(ray_version_one_path.remote(
+                version_fun=version_fun_id, input_path=input_path_id,
+                output_path=output_path_id, overwrite=overwrite_id,
+                original_info_df=original_df_id,
+                check_generated_files=ray.put(self.check_generated_files),
+                options=options_id))
+        for output_file_path, time_list in ray.get(versioning_result_ids):
+            self.current_run_version_times[output_file_path] = time_list
+
+        return FilePropertiesTable.get_df(
+            self,
+            target_indices=[p for p in glob.glob(os.path.join(self.version_base_dir, "**", "*"), recursive=True)
+                            if os.path.isfile(p)],
+            target_columns=target_columns, overwrite=overwrite)
+
+    @atable.column_function("original_file_path")
+    def set_original_file_path(self, file_path, row):
+        row[_column_name] = get_canonical_path(file_path.replace(self.version_base_dir, self.original_base_dir))
+
+    @atable.column_function("version_time", label="Versioning time (s)")
+    def set_version_time(self, file_path, row):
+        try:
+            version_time_list = self.current_run_version_times[file_path]
+        except KeyError:
+            enb.logger.verbose(f"[W]arning: no valid version time was found for {repr(file_path)}. "
+                               f"This is probably due to the versioning table changing the name of the"
+                               f"output files. If the actual versioning time is needed, "
+                               f"you can ovewrite set_version_time in {self.__class__} "
+                               f"looking at the appropriate values in self.current_run_version_times.")
+            version_time_list = [0]
+
+        if any(t < 0 for t in version_time_list):
+            raise atable.CorruptedTableError(
+                "A negative versioning time measurement was found "
+                f"for {file_path} using {self.__class__.__name__}. Most likely, the transformed version "
+                f"already existed, the table did not contain {_column_name}, "
+                f"and options.force(={options.force}) is not set to True")
+
+        if not version_time_list:
+            raise atable.CorruptedTableError(f"{_column_name} was not set for {file_path}, "
+                                             f"but it was not versioned in this run.")
+        row[_column_name] = sum(version_time_list) / len(version_time_list)
+
+    @atable.column_function("version_time_repetitions", label="Repetitions for obtaining versioning time")
+    def set_version_repetitions(self, file_path, row):
+        try:
+            version_time_list = self.current_run_version_times[file_path]
+            if not version_time_list:
+                raise atable.CorruptedTableError(f"{_column_name} was not set for {file_path}, "
+                                                 f"but it was not versioned in this run.")
+            row[_column_name] = len(version_time_list)
+        except KeyError:
+            # This is how we signal that no data has been gathered (see set_version_time)
+            row[_column_name] = 0
+
+    def column_version_name(self, file_path, row):
+        """Automatically add the version name as a column
+        """
+        return self.version_name
+
+    @atable.redefines_column
+    def set_corpus(self, file_path, row):
+        file_path = os.path.abspath(os.path.realpath(file_path))
+        if options.base_dataset_dir is not None:
+            file_dir = os.path.dirname(file_path)
+            base_dir = os.path.abspath(os.path.realpath(self.version_base_dir))
+            file_dir = file_dir.replace(base_dir, "")
+            while file_dir and file_dir[0] == os.sep:
+                file_dir = file_dir[1:]
+        else:
+            file_dir = os.path.basename(os.path.dirname(os.path.abspath(os.path.realpath(file_path))))
+        if not file_dir:
+            file_dir = os.path.basename(os.path.dirname(os.path.abspath(os.path.realpath(file_path))))
+        row[_column_name] = file_dir
+
+
+@ray.remote
+@config.propagates_options
+def ray_version_one_path(version_fun, input_path, output_path, overwrite, original_info_df, check_generated_files,
+                         options):
+    """Run the versioning of one path.
+    """
+    return version_one_path_local(version_fun=version_fun, input_path=input_path, output_path=output_path,
+                                  overwrite=overwrite, original_info_df=original_info_df,
+                                  check_generated_files=check_generated_files, options=options)
+
+
+def version_one_path_local(version_fun, input_path, output_path, overwrite,
+                           original_info_df, check_generated_files, options):
+    """Version input_path into output_path using version_fun.
+    
+    :return: a tuple ``(output_path, l)``, where output_path is the selected otuput path and
+      l is a list with the obtained versioning time. The list l shall contain options.repetitions elements.
+      NOTE: If the subclass version method returns a value, that value is taken
+      as the time measurement.
+    
+    :param version_fun: function with signature like FileVersionTable.version
+    :param input_path: path of the file to be versioned
+    :param output_path: path where the versioned file is to be stored
+    :param overwrite: if True, the version is calculated even if output_path already exists
+    :param original_info_df: DataFrame produced by a FilePropertiesTable instance that contains
+      an entry for :meth:`atable.indices_to_internal_loc`.
+    :param check_generated_files: flag indicating whether failing to produce output_path must raise an exception.
+    :param options: additional runtime options
+    """
+    time_measurements = []
+
+    output_path = get_canonical_path(output_path)
+    if os.path.exists(output_path) and not overwrite:
+        if options.verbose > 2:
+            print(f"[S]kipping versioning of {input_path}->{output_path}")
+        return output_path, [-1]
+
+    enb.logger.verbose(f"Versioning {input_path} -> {output_path} (overwrite={overwrite}) <{version_fun}>")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    row = original_info_df.loc[atable.indices_to_internal_loc(input_path)]
+    for repetition_index in range(options.repetitions):
+        try:
+            time_before = time.time()
+            versioning_time = version_fun(
+                input_path=input_path, output_path=output_path, row=row)
+            if check_generated_files and \
+                    (not os.path.exists(output_path) or os.path.getsize(output_path) == 0):
+                raise VersioningFailedException(
+                    f"Function {version_fun} did not produce a versioned path {input_path}->{output_path}")
+            versioning_time = versioning_time if versioning_time is not None \
+                else time.time() - time_before
+            if versioning_time < 0:
+                if options.verbose:
+                    print(f"[W]arning: versioning_time = {versioning_time} < 0 for "
+                          f"{self.__class__.__name__} on {input_path}")
+                versioning_time = 0
+            time_measurements.append(versioning_time)
+            if repetition_index < options.repetitions - 1:
+                os.remove(output_path)
+        except Exception as ex:
+            try:
+                os.remove(output_path)
+            except FileNotFoundError:
+                pass
+            raise ex
+
+    return output_path, time_measurements
+
+
+@deprecation.deprecated(deprecated_in="v0.2.7",
+                        removed_in="v1.1.0",
+                        current_version=enb.config.ini.get_key("enb", "version"),
+                        details="Please use atable.get_all_test_files() instead.")
+def get_all_test_files(*args, **kwargs):
+    """Deprecated - for backwards compatibility only.
+    """
+    return atable.get_all_input_files(*args, **kwargs)
+
+
+@deprecation.deprecated(deprecated_in="v0.2.7",
+                        removed_in="v0.3.0",
+                        details="Please use atable.get_canonical_path() instead.")
+def get_canonical_path(*args, **kwargs):
+    """Deprecated - for backwards compatibility only.
+    """
+    return atable.get_canonical_path(*args, **kwargs)
