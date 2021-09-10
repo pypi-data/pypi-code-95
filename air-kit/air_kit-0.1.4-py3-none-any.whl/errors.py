@@ -1,0 +1,2 @@
+class ConfigurationValidationError(Exception):
+    pass
