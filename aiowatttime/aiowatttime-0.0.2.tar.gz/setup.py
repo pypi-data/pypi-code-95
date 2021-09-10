@@ -1,0 +1,30 @@
+# -*- coding: utf-8 -*-
+from setuptools import setup
+
+packages = \
+['aiowatttime']
+
+package_data = \
+{'': ['*']}
+
+install_requires = \
+['aiohttp>=3.7.4,<4.0.0']
+
+setup_kwargs = {
+    'name': 'aiowatttime',
+    'version': '0.0.2',
+    'description': 'An asyncio-based Python3 library for interacting with WattTime',
+    'long_description': '# 🌎 aiowatttime: an asyncio-based, Python3 library for WattTime emissions data\n\n[![CI](https://github.com/bachya/aiowatttime/workflows/CI/badge.svg)](https://github.com/bachya/aiowatttime/actions)\n[![PyPi](https://img.shields.io/pypi/v/aiowatttime.svg)](https://pypi.python.org/pypi/aiowatttime)\n[![Version](https://img.shields.io/pypi/pyversions/aiowatttime.svg)](https://pypi.python.org/pypi/aiowatttime)\n[![License](https://img.shields.io/pypi/l/aiowatttime.svg)](https://github.com/bachya/aiowatttime/blob/master/LICENSE)\n[![Code Coverage](https://codecov.io/gh/bachya/aiowatttime/branch/master/graph/badge.svg)](https://codecov.io/gh/bachya/aiowatttime)\n[![Maintainability](https://api.codeclimate.com/v1/badges/781e64940b1302ae9ac3/maintainability)](https://codeclimate.com/github/bachya/aiowatttime/maintainability)\n[![Say Thanks](https://img.shields.io/badge/SayThanks-!-1EAEDB.svg)](https://saythanks.io/to/bachya)\n\n`aiowatttime` is a Python 3, asyncio-friendly library for interacting with\n[WattTime](https://www.watttime.org) emissions data.\n\n- [Python Versions](#python-versions)\n- [Installation](#installation)\n- [Usage](#usage)\n- [Contributing](#contributing)\n\n# Python Versions\n\n`aiowatttime` is currently supported on:\n\n* Python 3.8\n* Python 3.9\n\n# Installation\n\n```python\npip install aiowatttime\n```\n\n# Usage\n\n## Getting an API Key\n\nSimply clone this repo and run the included interactive script:\n\n```bash\n$ script/register\n```\n\nNote that WattTime offers three plans: Visitors, Analyst, and Pro. The type you use\nwill determine which elements of this library are available to use. You can read more\ndetails here: https://www.watttime.org/get-the-data/data-plans/\n\n## Creating and Using a Client\n\nThe `Client` is the primary method of interacting with the API:\n\n```python\nimport asyncio\n\nfrom aiowatttime import Client\n\n\nasync def main() -> None:\n    client = await Client.login("<USERNAME>", "<PASSWORD>")\n    # ...\n\n\nasyncio.run(main())\n```\n\nBy default, the library creates a new connection to the API with each coroutine. If\nyou are calling a large number of coroutines (or merely want to squeeze out every second of runtime savings possible), an\n[`aiohttp`](https://github.com/aio-libs/aiohttp) `ClientSession` can be used for connection\npooling:\n\n```python\nimport asyncio\n\nfrom aiohttp import ClientSession\n\nfrom aiowatttime import Client\n\n\nasync def main() -> None:\n    async with ClientSession() as session:\n        client = await Client.login("<USERNAME>", "<PASSWORD>", session=session)\n        # ...\n\n\nasyncio.run(main())\n```\n\n## Programmatically Requesting a Password Reset\n\n```python\nawait client.async_request_password_reset()\n```\n\n## Getting Emissions Data\n\n### Grid Region\n\nIt may be useful to first get the "grid region" (i.e., geographical info) for the area\nyou care about:\n\n```python\nawait client.emissions.async_get_grid_region("<LATITUDE>", "<LONGITUDE>")\n# >>> { "id": 263, "abbrev": "PJM_NJ", "name": "PJM New Jersey" }\n```\n\nGetting emissions data will require either your latitude/longitude _or_ the "balancing\nauthority abbreviation" (``PJM_NJ`` in the example above).\n\n### Realtime Data\n\n```python\nawait client.emissions.async_get_realtime_emissions("<LATITUDE>", "<LONGITUDE>")\n# >>> { "freq": "300", "ba": "CAISO_NORTH", "percent": "53", "moer": "850.743982", ... }\n```\n\n### Forecasted Data\n\n```python\nawait client.emissions.async_get_forecasted_emissions("<BA_ABBREVATION>")\n# >>> [ { "generated_at": "2021-08-05T09:05:00+00:00", "forecast": [...] } ]\n```\n\nYou can also get the forecasted data using a specific start and end `datetime.datetime`:\n\n```python\nfrom datetime import datetime\n\nawait client.emissions.async_get_forecasted_emissions(\n    "<BA_ABBREVATION>",\n    start_datetime=datetime(2021, 1, 1),\n    end_datetime=datetime(2021, 2, 1),\n)\n# >>> [ { "generated_at": "2021-08-05T09:05:00+00:00", "forecast": [...] } ]\n```\n\n### Historical Data\n\n```python\nawait client.emissions.async_get_historical_emissions("<LATITUDE>", "<LONGITUDE>")\n# >>> [ { "point_time": "2019-02-21T00:15:00.000Z", "value": 844, ... } ]\n```\n\nYou can also get the historical data using a specific start and end `datetime.datetime`:\n\n```python\nfrom datetime import datetime\n\nawait client.emissions.async_get_historical_emissions(\n    "<LATITUDE>",\n    "<LONGITUDE>"\n    start_datetime=datetime(2021, 1, 1),\n    end_datetime=datetime(2021, 2, 1),\n)\n# >>> [ { "point_time": "2019-02-21T00:15:00.000Z", "value": 844, ... } ]\n```\n\n# Contributing\n\n1. [Check for open features/bugs](https://github.com/bachya/aiowatttime/issues)\n  or [initiate a discussion on one](https://github.com/bachya/aiowatttime/issues/new).\n2. [Fork the repository](https://github.com/bachya/aiowatttime/fork).\n3. (_optional, but highly recommended_) Create a virtual environment: `python3 -m venv .venv`\n4. (_optional, but highly recommended_) Enter the virtual environment: `source ./venv/bin/activate`\n5. Install the dev environment: `script/setup`\n6. Code your new feature or bug fix.\n7. Write tests that cover your new functionality.\n8. Run tests and ensure 100% code coverage: `script/test`\n9. Update `README.md` with any new documentation.\n10. Add yourself to `AUTHORS.md`.\n11. Submit a pull request!\n',
+    'author': 'Aaron Bach',
+    'author_email': 'bachya1208@gmail.com',
+    'maintainer': None,
+    'maintainer_email': None,
+    'url': 'https://github.com/bachya/aiowatttime',
+    'packages': packages,
+    'package_data': package_data,
+    'install_requires': install_requires,
+    'python_requires': '>=3.6.0,<4.0.0',
+}
+
+
+setup(**setup_kwargs)
