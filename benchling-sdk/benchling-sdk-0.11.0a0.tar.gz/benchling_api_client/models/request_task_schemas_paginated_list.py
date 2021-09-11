@@ -1,0 +1,97 @@
+from typing import Any, Dict, List, Optional, Type, TypeVar
+
+import attr
+
+from ..models.request_task_schema import RequestTaskSchema
+
+T = TypeVar("T", bound="RequestTaskSchemasPaginatedList")
+
+
+@attr.s(auto_attribs=True, repr=False)
+class RequestTaskSchemasPaginatedList:
+    """  """
+
+    _next_token: str
+    _request_task_schemas: List[RequestTaskSchema]
+    additional_properties: Dict[str, Any] = attr.ib(init=False, factory=dict)
+
+    def __repr__(self):
+        fields = []
+        fields.append("next_token={}".format(repr(self._next_token)))
+        fields.append("request_task_schemas={}".format(repr(self._request_task_schemas)))
+        fields.append("additional_properties={}".format(repr(self.additional_properties)))
+        return "RequestTaskSchemasPaginatedList({})".format(", ".join(fields))
+
+    def to_dict(self) -> Dict[str, Any]:
+        next_token = self._next_token
+        request_task_schemas = []
+        for request_task_schemas_item_data in self._request_task_schemas:
+            request_task_schemas_item = request_task_schemas_item_data.to_dict()
+
+            request_task_schemas.append(request_task_schemas_item)
+
+        field_dict: Dict[str, Any] = {}
+        field_dict.update(self.additional_properties)
+        field_dict.update(
+            {
+                "nextToken": next_token,
+                "requestTaskSchemas": request_task_schemas,
+            }
+        )
+
+        return field_dict
+
+    @classmethod
+    def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
+        d = src_dict.copy()
+        next_token = d.pop("nextToken")
+
+        request_task_schemas = []
+        _request_task_schemas = d.pop("requestTaskSchemas")
+        for request_task_schemas_item_data in _request_task_schemas:
+            request_task_schemas_item = RequestTaskSchema.from_dict(request_task_schemas_item_data)
+
+            request_task_schemas.append(request_task_schemas_item)
+
+        request_task_schemas_paginated_list = cls(
+            next_token=next_token,
+            request_task_schemas=request_task_schemas,
+        )
+
+        request_task_schemas_paginated_list.additional_properties = d
+        return request_task_schemas_paginated_list
+
+    @property
+    def additional_keys(self) -> List[str]:
+        return list(self.additional_properties.keys())
+
+    def __getitem__(self, key: str) -> Any:
+        return self.additional_properties[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.additional_properties[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self.additional_properties[key]
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.additional_properties
+
+    def get(self, key, default=None) -> Optional[Any]:
+        return self.additional_properties.get(key, default)
+
+    @property
+    def next_token(self) -> str:
+        return self._next_token
+
+    @next_token.setter
+    def next_token(self, value: str) -> None:
+        self._next_token = value
+
+    @property
+    def request_task_schemas(self) -> List[RequestTaskSchema]:
+        return self._request_task_schemas
+
+    @request_task_schemas.setter
+    def request_task_schemas(self, value: List[RequestTaskSchema]) -> None:
+        self._request_task_schemas = value
