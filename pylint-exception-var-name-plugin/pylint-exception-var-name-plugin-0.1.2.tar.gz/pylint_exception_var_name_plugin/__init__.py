@@ -1,0 +1,1 @@
+from pylint_exception_var_name_plugin.exception_var_name import register
