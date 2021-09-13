@@ -1,0 +1,1 @@
+STANDARD_EPOCH_FMT = "%b %d %Y %H:%M:%S.%f"
