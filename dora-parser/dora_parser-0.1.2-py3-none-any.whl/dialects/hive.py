@@ -1,0 +1,31 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright 2021 Compasso UOL
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+"""Hive Dialect definition"""
+from dora_parser.dialects import Dialect
+
+types = ["TINYINT","SMALLINT","INT","INTEGER","BIGINT","FLOAT","DOUBLE","DECIMAL","NUMERIC","TIMESTAMP","DATE","INTERVAL","STRING","VARCHAR","CHAR","BOOLEAN","BINARY","ARRAY","MAP","STRUCT","UNIONTYPE"]
+
+functions = ["ABS","ACOS","ADD_MONTHS","AES_DECRYPT","AES_ENCRYPT","ARRAY_CONTAINS","ASCII","ASIN","ASSERT_TRUE","ATAN","AVG","BASE64","BIN","BINARY","BROUND","CASE","CAST","CBRT","CEIL","CEILING","CHARACTER_LENGTH","CHR","COALESCE","COLLECT_LIST","COLLECT_SET","CONCAT","CONCAT_WS","CONTEXT_NGRAMS","CONV","CORR","COS","COUNT","COVAR_POP","COVAR_SAMP","CRC32","CURRENT_DATABASE","CURRENT_DATE","CURRENT_TIMESTAMP","CURRENT_USER","DATE_ADD","DATE_FORMAT","DATE_SUB","DATEDIFF","DAY","DAYOFMONTH","DECODE","DEGREES","E","ELT","ENCODE","EXP","EXPLODE","EXTRACT","FACTORIAL","FIELD","FIND_IN_SET","FLOOR","FORMAT_NUMBER","FROM_UNIXTIME","FROM_UTC_TIMESTAMP","GET_JSON_OBJECT","GREATEST","HASH","HEX","HISTOGRAM_NUMERIC","HOUR","IF","IN_FILE","INITCAP","INSTR","ISNOTNULL","ISNULL","JAVA_METHOD","LAST_DAY","LCASE","LEAST","LENGTH","LEVENSHTEIN","LN","LOCATE","LOG","LOG10","LOG2","LOGGED_IN_USER","LOWER","LPAD","LTRIM","MAP_KEYS","MAP_VALUES","MASK","MASK_FIRST_N","MASK_HASH","MASK_LAST_N","MASK_SHOW_FIRST_N","MASK_SHOW_LAST_N","MAX","MD5","MIN","MINUTE","MONTH","MONTHS_BETWEEN","NEGATIVE","NEXT_DAY","NGRAMS","NTILE","NULLIF","NVL","OCTET_LENGTH","PARSE_URL","PARSE_URL_TUPLE","PERCENTILE","PERCENTILE_APPROX","PI","PMOD","POSITIVE","POW","PRINTF","QUARTER","RADIANS","RAND","REFLECT","REGEXP_EXTRACT","REGEXP_REPLACE","REGR_AVGX","REGR_AVGY","REGR_COUNT","REGR_INTERCEPT","REGR_R2","REGR_SLOPE","REGR_SXX","REGR_SXY","REGR_SYY","REPEAT","REPLACE","REVERSE","RLIKE","ROUND","RPAD","RTRIM","SECOND","SENTENCES","SHA","SHA1","SHA2","SHIFTLEFT","SHIFTRIGHT","SHIFTRIGHTUNSIGNED","SIGN","SIN","SIZE","SORT_ARRAY","SOUNDEX","SPACE","SPLIT","SQRT","STDDEV_POP","STDDEV_SAMP","STR","STR_TO_MAP","SUBSTR","SUBSTRING","SUBSTRING_INDEX","SUM","SURROGATE_KEY","TAN","TO_DATE","TO_UTC_TIMESTAMP","TRANSLATE","TRIM","TRUNC","UCASE","UNBASE64","UNHEX","UNIX_TIMESTAMP","UPPER","VAR_POP","VAR_SAMP","VARIANCE","VERSION","WEEKOFYEAR","WIDTH_BUCKET","YEAR"]
+
+SUPPORTED_DIALECTS = ['impala']
+
+class Hive(Dialect):
+    def __init__(self, source:str):
+        if source not in SUPPORTED_DIALECTS:
+            raise ValueError(f"{source} dialect not supported")
+        super().__init__(source)
+        self.implemented(functions + types)
