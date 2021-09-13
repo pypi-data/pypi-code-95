@@ -1,0 +1,151 @@
+"""
+Trust Region Step Evaluation
+----------------------------
+This module provides the machinery to evaluate different trust-region(
+-reflective) step proposals and select among them based on to their
+performance according to the quadratic approximation of the objective function
+"""
+
+import numpy as np
+import logging
+
+from scipy.sparse import csc_matrix
+
+from .constants import SubSpaceDim, StepBackStrategy
+from .steps import (
+    Step, GradientStep, ScaledGradientStep, TRStep2D, TRStepFull,
+    TRStepReflected, TRStepSteihaug
+)
+from .stepback import stepback_refine, stepback_reflect, stepback_truncate
+
+
+def trust_region(x: np.ndarray,
+                 g: np.ndarray,
+                 hess: np.ndarray,
+                 scaling: csc_matrix,
+                 delta: float,
+                 dv: np.ndarray,
+                 theta: float,
+                 lb: np.ndarray,
+                 ub: np.ndarray,
+                 subspace_dim: SubSpaceDim,
+                 stepback_strategy: StepBackStrategy,
+                 refine_stepback: bool,
+                 use_scaled_gradient: bool,
+                 logger: logging.Logger) -> Step:
+    """
+    Compute a step according to the solution of the trust-region subproblem.
+    If step-back is necessary, gradient and reflected trust region step are
+    also evaluated in terms of their performance according to the local
+    quadratic approximation
+
+    :param x:
+        Current values of the optimization variables
+    :param g:
+        Objective function gradient at x
+    :param hess:
+        (Approximate) objective function Hessian at x
+    :param scaling:
+        Scaling transformation according to distance to boundary
+    :param delta:
+        Trust region radius, note that this applies after scaling
+        transformation
+    :param dv:
+        derivative of scaling transformation
+    :param theta:
+        parameter regulating stepback
+    :param lb:
+        lower optimization variable boundaries
+    :param ub:
+        upper optimization variable boundaries
+    :param subspace_dim:
+        Subspace dimension in which the subproblem will be solved. Larger
+        subspaces require more compute time but can yield higher quality step
+        proposals.
+    :param stepback_strategy:
+        Strategy that is applied when the proposed step exceeds the
+        optimization boundary.
+    :param refine_stepback:
+        If set to True, proposed steps that are computed via the specified
+        stepback_strategy will be refined via optimization.
+    :param use_scaled_gradient:
+        If set to True, the scaled gradient will be added to the set of
+        proposal steps
+    :param logger:
+        logging.Logger instance to be used for logging
+
+    :return:
+        s: proposed step,
+        ss: rescaled proposed step,
+        qpval: expected function value according to local quadratic
+        approximation,
+        subspace: computed subspace for reuse if proposed step is not accepted,
+        steptype: type of step that was selected for proposal
+    """
+    sg = scaling.dot(g)
+    g_dscaling = csc_matrix(np.diag(np.abs(g) * dv))
+
+    steps = {
+        SubSpaceDim.TWO: TRStep2D,
+        SubSpaceDim.FULL: TRStepFull,
+        SubSpaceDim.STEIHAUG: TRStepSteihaug,
+    }
+    if subspace_dim not in steps:
+        raise ValueError('Invalid choice of subspace dimension.')
+    tr_step = steps[subspace_dim](x, sg, hess, scaling, g_dscaling, delta,
+                                  theta, ub, lb, logger)
+    tr_step.calculate()
+
+    # in case of truncation, we hit the boundary and we check both the
+    # gradient and the reflected step, either of which could be better than the
+    # TR step
+
+    steps = [tr_step]
+    if tr_step.alpha < 1.0 and len(g) > 1:
+        g_step = GradientStep(x, sg, hess, scaling, g_dscaling, delta,
+                              theta, ub, lb, logger)
+        g_step.calculate()
+        steps.append(g_step)
+        if use_scaled_gradient:
+            dg_step = ScaledGradientStep(x, sg, hess, scaling, g_dscaling,
+                                         delta, theta, ub, lb, logger)
+            dg_step.calculate()
+            steps.append(dg_step)
+
+        if stepback_strategy == StepBackStrategy.SINGLE_REFLECT:
+            rtr_step = TRStepReflected(x, sg, hess, scaling, g_dscaling, delta,
+                                       theta, ub, lb, tr_step)
+            rtr_step.calculate()
+            steps.append(rtr_step)
+
+        if stepback_strategy in [StepBackStrategy.REFLECT,
+                                 StepBackStrategy.MIXED]:
+            steps.extend(stepback_reflect(
+                tr_step, x, sg, hess, scaling, g_dscaling, delta, theta, ub,
+                lb
+            ))
+        if stepback_strategy in [StepBackStrategy.TRUNCATE,
+                                 StepBackStrategy.MIXED]:
+            steps.extend(stepback_truncate(
+                tr_step, x, sg, hess, scaling, g_dscaling, delta, theta, ub,
+                lb
+            ))
+        if refine_stepback:
+            steps.extend(stepback_refine(
+                steps, x, sg, hess, scaling, g_dscaling, delta, theta, ub,
+                lb
+            ))
+
+    if len(steps) > 1:
+        rcountstrs = [str(step.reflection_count)
+                      * int(step.reflection_count > 0)
+                      for step in steps]
+        logger.debug(' | '.join([
+            f'{step.type + rcountstr}: [qp:'
+            f' {step.qpval:.2E}, '
+            f'a: {step.alpha:.2E}]'
+            for rcountstr, step in zip(rcountstrs, steps)
+        ]))
+
+    qpvals = [step.qpval for step in steps]
+    return steps[np.argmin(qpvals)]
