@@ -1,0 +1,44 @@
+from flask_jwt_extended import jwt_required
+
+from shakenfist.artifact import Artifact, Artifacts
+from shakenfist import baseobject
+from shakenfist.external_api import base as api_base
+from shakenfist.config import config
+from shakenfist import db
+from shakenfist.tasks import FetchImageTask
+
+
+class ArtifactsEndpoint(api_base.Resource):
+    @jwt_required
+    def get(self, node=None):
+        retval = []
+        for i in Artifacts(filters=[baseobject.active_states_filter]):
+            b = i.most_recent_index
+            if b:
+                if not node:
+                    retval.append(i.external_view())
+                elif node in b.locations:
+                    retval.append(i.external_view())
+        return retval
+
+    @jwt_required
+    def post(self, url=None):
+        # The only artifact type you can force the cluster to fetch is an
+        # image, so TYPE_IMAGE is assumed here.
+        db.add_event('image', url, 'api', 'cache', None, None)
+
+        # We ensure that the image exists in the database in an initial state
+        # here so that it will show up in image list requests. The image is
+        # fetched by the queued job later.
+        a = Artifact.from_url(Artifact.TYPE_IMAGE, url)
+        db.enqueue(config.NODE_NAME, {
+            'tasks': [FetchImageTask(url)],
+        })
+        return a.external_view()
+
+
+class ArtifactEventsEndpoint(api_base.Resource):
+    @jwt_required
+    # TODO(andy): Should images be owned? Personalised images should be owned.
+    def get(self, url):
+        return list(db.get_events('image', url))
