@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# @Author : 陈坤泽
+# @Email  : 877362867@qq.com
+# @Date   : 2021/06/03 23:21
+
+
+""" 封装一些代码开发中常用的功能，工程组件 """
+import itertools
+from urllib.parse import urlparse
+import io
+import json
+import math
+import os
+import queue
+import socket
+import sys
+import time
+import pprint
+import tempfile
+from functools import partial
+
+
+def system_information():
+    """主要是测试一些系统变量值，顺便再演示一次Timer用法"""
+
+    def pc_messages():
+        """演示如何获取当前操作系统的PC环境数据"""
+        # fqdn：fully qualified domain name
+        print('1、socket.getfqdn() :', socket.getfqdn())  # 完全限定域名，可以理解成pcname，计算机名
+        # 注意py的很多标准库功能本来就已经处理了不同平台的问题，尽量用标准库而不是自己用sys.platform作分支处理
+        print('2、sys.platform     :', sys.platform)  # 运行平台，一般是win32和linux
+        # li = os.getenv('PATH').split(os.path.pathsep)  # 环境变量名PATH，win中不区分大小写，linux中区分大小写必须写成PATH
+        # print("3、os.getenv('PATH'):", f'数量={len(li)},', pprint.pformat(li, 4))
+
+    def executable_messages():
+        """演示如何获取被执行程序相关的数据"""
+        print('1、sys.executable   :', sys.executable)  # 当前被执行脚本位置
+        print('2、sys.version      :', sys.version)  # python的版本
+        print('3、os.getcwd()      :', os.getcwd())  # 获得当前工作目录
+        print('4、gettempdir()     :', tempfile.gettempdir())  # 临时文件夹位置
+        # print('5、sys.path       :', f'数量={len(sys.path)},', pprint.pformat(sys.path, 4))  # import绝对位置包的搜索路径
+
+    print('【pc_messages】')
+    pc_messages()
+    print('【executable_messages】')
+    executable_messages()
+
+
+def is_url(arg):
+    """输入是一个字符串，且值是一个合法的url"""
+    if not isinstance(arg, str): return False
+    try:
+        result = urlparse(arg)
+        return all([result.scheme, result.netloc])
+    except ValueError:
+        return False
+
+
+def is_file(arg, exists=True):
+    """相较于标准库的os.path.isfile，对各种其他错误类型也会判False
+
+    :param exists: arg不仅需要是一个合法的文件名，还要求其实际存在
+        设为False，则只判断文件名合法性，不要求其一定要存在
+    """
+    if not isinstance(arg, str): return False
+    if not exists:
+        raise NotImplementedError
+    return os.path.isfile(arg)
+
+
+def get_hostname():
+    return socket.getfqdn()
+
+
+def get_username():
+    return os.path.split(os.path.expanduser('~'))[-1]
+
+
+def len_in_dim2_min(arr):
+    """ 计算类List结构在第2维上的最小长度
+
+    >>> len_in_dim2([[1,1], [2], [3,3,3]])
+    3
+
+    >>> len_in_dim2([1, 2, 3])  # TODO 是不是应该改成0合理？但不知道牵涉到哪些功能影响
+    1
+    """
+    if not isinstance(arr, (list, tuple)):
+        raise TypeError('类型错误，不是list构成的二维数组')
+
+    # 找出元素最多的列
+    column_num = math.inf
+    for i, item in enumerate(arr):
+        if isinstance(item, (list, tuple)):  # 该行是一个一维数组
+            column_num = min(column_num, len(item))
+        else:  # 如果不是数组，是指单个元素，当成1列处理
+            column_num = min(column_num, 1)
+            break  # 只要有个1，最小长度就一定是1了
+
+    return column_num
+
+
+def print2string(*args, **kwargs):
+    """https://stackoverflow.com/questions/39823303/python3-print-to-string"""
+    output = io.StringIO()
+    print(*args, file=output, **kwargs)
+    contents = output.getvalue()
+    output.close()
+    return contents
+
+
+class EmptyPoolExecutor:
+    """伪造一个类似concurrent.futures.ThreadPoolExecutor、ProcessPoolExecutor的接口类
+        用来检查多线程、多进程中的错误
+
+    即并行中不会直接报出每个线程的错误，只能串行执行才好检查
+        但是两种版本代码来回修改很麻烦，故设计此类，只需把
+            concurrent.futures.ThreadPoolExecutor 暂时改为 EmptyPoolExecutor 进行调试即可
+    """
+
+    def __init__(self, *args, **kwargs):
+        """参数并不需要实际处理，并没有真正并行，而是串行执行"""
+        self._work_queue = queue.Queue()
+
+    def submit(self, func, *args, **kwargs):
+        """执行函数"""
+        func(*args, **kwargs)
+
+    def shutdown(self):
+        # print('并行执行结束')
+        pass
+
+
+def xlwait(func, condition=bool, *, limit=None, interval=1):
+    """ 不断重复执行func，直到得到满足condition条件的期望值
+
+    :param condition: 退出等待的条件，默认为bool真值
+    :param limit: 重复执行的上限时间（单位 秒），默认一直等待
+    :param interval: 重复执行间隔 （单位 秒）
+
+    """
+    t = time.time()
+    while True:
+        res = func()
+        if condition(res):
+            return res
+        elif limit and (time.time() - t > limit):
+            return res  # 超时也返回目前得到的结果
+        time.sleep(interval)
+
+
+class DictTool:
+    @classmethod
+    def json_loads(cls, label, default=None):
+        """ 尝试从一段字符串解析为字典
+
+        :param default: 如果不是字典时的处理策略
+            None，不作任何处理
+            str，将原label作为defualt这个键的值来存储
+        :return: s为非字典结构时返回空字典
+
+        >>> DictTool.json_loads('123', 'label')
+        {'label': '123'}
+        >>> DictTool.json_loads('[123, 456]', 'label')
+        {'label': '[123, 456]'}
+        >>> DictTool.json_loads('{"a": 123}', 'label')
+        {'a': 123}
+        """
+        labelattr = dict()
+        try:
+            data = json.loads(label)
+            if isinstance(data, dict):
+                labelattr = data
+        except json.decoder.JSONDecodeError:
+            pass
+        if not labelattr and isinstance(default, str):
+            labelattr[default] = label
+        return labelattr
+
+    @classmethod
+    def or_(cls, *args):
+        """ 合并到新字典
+
+        左边字典有的key，优先取左边，右边不会覆盖。
+        如果要覆盖效果，直接用 d1.update(d2)功能即可。
+
+        :return: args[0] | args[1] | ... | args[-1].
+        """
+        res = {}
+        cls.ior(res, *args)
+        return res
+
+    @classmethod
+    def ior(cls, dict_, *args):
+        """ 合并到第1个字典
+
+        :return: dict_ |= (args[0] | args[1] | ... | args[-1]).
+        """
+        if sys.version_info.major == 3 and sys.version_info.minor >= 9:
+            for x in args:
+                dict_ |= x
+        else:  # 旧版本py手动实现一个兼容功能
+            for x in args:
+                for k, v in x.items():
+                    if k not in dict_:
+                        dict_[k] = v
+
+    @classmethod
+    def sub(cls, dict_, keys):
+        """ 删除指定键值（不存在的跳过，不报错）
+
+        inplace subtraction
+
+        keys可以输入另一个字典，也可以输入一个列表表示要删除的键值清单
+
+        :return: dict_ -= keys
+        """
+        if isinstance(keys, dict):
+            keys = keys.keys()
+
+        return {k: v for k, v in dict_.items() if k not in keys}
+
+    @classmethod
+    def isub(cls, dict_, keys):
+        """ 删除指定键值（不存在的跳过，不报错）
+
+        inplace subtraction
+
+        keys可以输入另一个字典，也可以输入一个列表表示要删除的键值清单
+
+        :return: dict_ -= keys
+        """
+        if isinstance(keys, dict):
+            keys = keys.keys()
+
+        for k in keys:
+            if k in dict_:
+                del dict_[k]
+
+
+class EnchantBase:
+    @classmethod
+    def check_enchant_names(cls, classes, names=None):
+        """
+        :param list classes: 不能跟这里列出的模块、类的成员重复
+        :param list|str|tuple names: 要检查的名称清单
+        """
+        exist_names = {x.__name__: set(dir(x)) for x in classes}
+        if names is None:
+            names = {x for x in dir(cls) if x[:2] != '__'} - {'check_enchant_names', '_enchant', 'enchant'}
+
+        for name, k in itertools.product(names, exist_names):
+            if name in exist_names[k]:
+                print(f'警告！同名冲突！ {k}.{name}')
+
+        return names
+
+    @classmethod
+    def _enchant(cls, dst_cls, names=None, mode='classmethod2objectmethod'):
+        names = cls.check_enchant_names([dst_cls], names)
+
+        for name in set(names):
+            if mode == 'classmethod2objectmethod':
+                # 用的最多的形式，将原来类上面的方法，添加到新的对象方法上
+                setattr(dst_cls, name, partial(getattr(cls, name), ))
+            elif mode == 'property':
+                setattr(dst_cls, name, property(getattr(cls, name)))
+            elif mode == 'classmethod':
+                setattr(dst_cls, name, classmethod(getattr(cls, name)))
+            elif 123:
+                setattr(dst_cls, name, getattr(cls, name))
+            else:
+                raise ValueError
+
+    @classmethod
+    def enchant(cls):
+        raise NotImplementedError
