@@ -1,0 +1,1 @@
+from .ngroktoduckdns import cli
