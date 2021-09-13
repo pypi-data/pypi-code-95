@@ -1,0 +1,179 @@
+import copy
+import typing
+
+from selenium.common.exceptions import StaleElementReferenceException
+
+from .element_strategy import ElementStrategy
+from .strategy import strategy
+from ..utils import _retry
+
+
+class SplinterBase(ElementStrategy):
+    def is_clickable(self, wait_time: typing.Optional[int] = None) -> bool:
+        """Check if an element is present in the DOM and clickable.
+
+        Arguments:
+            wait_time (int): The number of seconds to wait. If not specified,
+                Stere.retry_time will be used.
+        """
+        return _retry(
+            lambda: self.find() and self.find()._element.is_enabled(),
+            wait_time,
+        )
+
+    def is_not_clickable(self, wait_time: typing.Optional[int] = None) -> bool:
+        """Check if an element is not clickable in the DOM.
+
+        Arguments:
+            wait_time (int): The number of seconds to wait. If not specified,
+                Stere.retry_time will be used.
+        """
+        def search() -> bool:
+            result = self.find(wait_time=0)
+            if not result:
+                return True
+            if result and not result._element.is_enabled():
+                return True
+            return False
+
+        return _retry(search, wait_time)
+
+    def is_present(self, wait_time: typing.Optional[int] = None) -> bool:
+        """Check if an element is present in the DOM.
+
+        Arguments:
+            wait_time (int): The number of seconds to wait. If not specified,
+                Stere.retry_time will be used.
+        """
+        return _retry(
+            lambda: self.find(),
+            wait_time,
+        )
+
+    def is_not_present(self, wait_time: typing.Optional[int] = None) -> bool:
+        """Check if an element is not present in the DOM.
+
+        Arguments:
+            wait_time (int): The number of seconds to wait. If not specified,
+                Stere.retry_time will be used.
+        """
+        return _retry(
+            lambda: not self.find(wait_time=0),
+            wait_time,
+        )
+
+    def is_visible(self, wait_time: typing.Optional[int] = None) -> bool:
+        """Check if an element is present in the DOM and visible.
+
+        Arguments:
+            wait_time (int): The number of seconds to wait. If not specified,
+                Stere.retry_time will be used.
+        """
+        def search() -> bool:
+            elem = self.find()
+            if elem:
+                try:
+                    result = elem.visible
+                # StaleElementReferenceException occurs if element is found
+                # but changes before visible is checked
+                except StaleElementReferenceException:
+                    return False
+
+                if result:
+                    return True
+
+            return False
+
+        return _retry(search, wait_time)
+
+    def is_not_visible(self, wait_time: typing.Optional[int] = None) -> bool:
+        """Check if an element is not visible in the DOM.
+
+        Arguments:
+            wait_time (int): The number of seconds to wait. If not specified,
+                Stere.retry_time will be used.
+        """
+        def search():
+            elem = self.find(wait_time=0)
+            if elem:
+                try:
+                    result = elem.visible
+                # StaleElementReferenceException occurs if element is found
+                # but changes before visible is checked
+                except StaleElementReferenceException:
+                    return False
+
+                if not result:
+                    return True
+            else:
+                return True
+
+            return False
+
+        return _retry(search, wait_time)
+
+    def _find_all(self, wait_time: typing.Optional[int] = None):
+        """Find from inside a parent element."""
+        parent = self.parent_locator or self.browser
+        func = getattr(parent, f'find_by_{self.strategy}')
+        return func(self.locator, wait_time=wait_time)
+
+
+@strategy('css')
+class FindByCss(SplinterBase):
+    strategy = 'css'
+
+
+@strategy('xpath')
+class FindByXPath(SplinterBase):
+    strategy = 'xpath'
+
+
+@strategy('tag')
+class FindByTag(SplinterBase):
+    strategy = 'tag'
+
+
+@strategy('name')
+class FindByName(SplinterBase):
+    strategy = 'name'
+
+
+@strategy('text')
+class FindByText(SplinterBase):
+    strategy = 'text'
+
+
+@strategy('id')
+class FindById(SplinterBase):
+    strategy = 'id'
+
+
+@strategy('value')
+class FindByValue(SplinterBase):
+    strategy = 'value'
+
+
+class FindByAttribute(SplinterBase):
+    """Strategy to find an element by an arbitrary attribute."""
+
+    _attribute = ''
+
+    def _find_all(self, wait_time: typing.Optional[int] = None):
+        """Find from inside parent element."""
+        parent = self.parent_locator or self.browser
+        return parent.find_by_css(
+            f'[{self._attribute}="{self.locator}"]', wait_time=wait_time,
+        )
+
+
+def add_data_star_strategy(data_star_attribute: str):
+    """Add a new splinter strategy that finds by data_star_attribute.
+
+    Arguments:
+        data_star_attribute (str): The data-* attribute to use in the new
+            strategy.
+    """
+    find_by_data_star = copy.deepcopy(FindByAttribute)
+    find_by_data_star._attribute = data_star_attribute
+    return strategy(data_star_attribute)(find_by_data_star)
