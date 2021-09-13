@@ -1,0 +1,85 @@
+# flake8: noqa
+
+# import all models into this package
+# if you have many models here with many references from one model to another this may
+# raise a RecursionError
+# to avoid this, import only the models that you directly need like:
+# from from openapi_client.model.pet import Pet
+# or import this package, but before doing it, use:
+# import sys
+# sys.setrecursionlimit(n)
+
+from openapi_client.model.access_role_enum import AccessRoleEnum
+from openapi_client.model.account_integration import AccountIntegration
+from openapi_client.model.account_token import AccountToken
+from openapi_client.model.activity import Activity
+from openapi_client.model.activity_type_enum import ActivityTypeEnum
+from openapi_client.model.application import Application
+from openapi_client.model.application_request import ApplicationRequest
+from openapi_client.model.attachment import Attachment
+from openapi_client.model.attachment_request import AttachmentRequest
+from openapi_client.model.attachment_type_enum import AttachmentTypeEnum
+from openapi_client.model.available_actions import AvailableActions
+from openapi_client.model.candidate import Candidate
+from openapi_client.model.candidate_request import CandidateRequest
+from openapi_client.model.data_passthrough_request import DataPassthroughRequest
+from openapi_client.model.department import Department
+from openapi_client.model.disability_status_enum import DisabilityStatusEnum
+from openapi_client.model.eeoc import EEOC
+from openapi_client.model.email_address import EmailAddress
+from openapi_client.model.email_address_request import EmailAddressRequest
+from openapi_client.model.email_address_type_enum import EmailAddressTypeEnum
+from openapi_client.model.end_user_details_request import EndUserDetailsRequest
+from openapi_client.model.gender_enum import GenderEnum
+from openapi_client.model.generate_remote_key_request import GenerateRemoteKeyRequest
+from openapi_client.model.job import Job
+from openapi_client.model.job_interview_stage import JobInterviewStage
+from openapi_client.model.job_status_enum import JobStatusEnum
+from openapi_client.model.link_token import LinkToken
+from openapi_client.model.method_enum import MethodEnum
+from openapi_client.model.model_operation import ModelOperation
+from openapi_client.model.offer import Offer
+from openapi_client.model.offer_status_enum import OfferStatusEnum
+from openapi_client.model.office import Office
+from openapi_client.model.overall_recommendation_enum import OverallRecommendationEnum
+from openapi_client.model.paginated_activity_list import PaginatedActivityList
+from openapi_client.model.paginated_application_list import PaginatedApplicationList
+from openapi_client.model.paginated_attachment_list import PaginatedAttachmentList
+from openapi_client.model.paginated_candidate_list import PaginatedCandidateList
+from openapi_client.model.paginated_department_list import PaginatedDepartmentList
+from openapi_client.model.paginated_eeoc_list import PaginatedEEOCList
+from openapi_client.model.paginated_job_interview_stage_list import PaginatedJobInterviewStageList
+from openapi_client.model.paginated_job_list import PaginatedJobList
+from openapi_client.model.paginated_offer_list import PaginatedOfferList
+from openapi_client.model.paginated_office_list import PaginatedOfficeList
+from openapi_client.model.paginated_reject_reason_list import PaginatedRejectReasonList
+from openapi_client.model.paginated_remote_user_list import PaginatedRemoteUserList
+from openapi_client.model.paginated_scheduled_interview_list import PaginatedScheduledInterviewList
+from openapi_client.model.paginated_scorecard_list import PaginatedScorecardList
+from openapi_client.model.paginated_sync_status_list import PaginatedSyncStatusList
+from openapi_client.model.paginated_tag_list import PaginatedTagList
+from openapi_client.model.phone_number import PhoneNumber
+from openapi_client.model.phone_number_request import PhoneNumberRequest
+from openapi_client.model.phone_number_type_enum import PhoneNumberTypeEnum
+from openapi_client.model.race_enum import RaceEnum
+from openapi_client.model.reject_reason import RejectReason
+from openapi_client.model.remote_data import RemoteData
+from openapi_client.model.remote_data_request import RemoteDataRequest
+from openapi_client.model.remote_key import RemoteKey
+from openapi_client.model.remote_key_for_regeneration_request import RemoteKeyForRegenerationRequest
+from openapi_client.model.remote_response import RemoteResponse
+from openapi_client.model.remote_user import RemoteUser
+from openapi_client.model.remote_user_request import RemoteUserRequest
+from openapi_client.model.scheduled_interview import ScheduledInterview
+from openapi_client.model.scheduled_interview_request import ScheduledInterviewRequest
+from openapi_client.model.scheduled_interview_status_enum import ScheduledInterviewStatusEnum
+from openapi_client.model.scorecard import Scorecard
+from openapi_client.model.scorecard_request import ScorecardRequest
+from openapi_client.model.sync_status import SyncStatus
+from openapi_client.model.sync_status_status_enum import SyncStatusStatusEnum
+from openapi_client.model.tag import Tag
+from openapi_client.model.url import Url
+from openapi_client.model.url_request import UrlRequest
+from openapi_client.model.url_type_enum import UrlTypeEnum
+from openapi_client.model.veteran_status_enum import VeteranStatusEnum
+from openapi_client.model.visibility_enum import VisibilityEnum
