@@ -1,0 +1,9 @@
+__title__ = 'xmind2testcase-kd'
+__description__ = '修改xmind2testcase项目，方便自身使用，原作者请访问url仓库'
+__keywords__ = 'xmind2testCase, testcase, test, testing, xmind, 思维导图, XMind思维导图',
+__url__ = 'https://github.com/zhuifengshen/xmind2testcase'
+__author__ = 'Devin@yeungkhaichel'
+__author_email__ = '1005935991@qq.com'
+__version__ = '0.0.4'
+__license__ = 'MIT'
+__cake__ = u'\u2728 \U0001f370 \u2728'
