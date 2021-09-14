@@ -1,0 +1,15 @@
+from apischema.utils import PREFIX
+
+ALIAS_METADATA = f"{PREFIX}alias"
+ALIAS_NO_OVERRIDE_METADATA = f"{PREFIX}alias_no_override"
+CONVERSION_METADATA = f"{PREFIX}conversion"
+DEFAULT_AS_SET_METADATA = f"{PREFIX}default_as_set"
+FALL_BACK_ON_DEFAULT_METADATA = f"{PREFIX}fall_back_on_default"
+FLATTENED_METADATA = f"{PREFIX}flattened"
+INIT_VAR_METADATA = f"{PREFIX}init_var"
+POST_INIT_METADATA = f"{PREFIX}post_init"
+PROPERTIES_METADATA = f"{PREFIX}properties"
+REQUIRED_METADATA = f"{PREFIX}required"
+SCHEMA_METADATA = f"{PREFIX}schema"
+SKIP_METADATA = f"{PREFIX}skip"
+VALIDATORS_METADATA = f"{PREFIX}validators"
