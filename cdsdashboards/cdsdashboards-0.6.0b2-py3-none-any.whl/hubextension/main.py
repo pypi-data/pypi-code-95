@@ -1,0 +1,657 @@
+import sys, re
+
+from tornado.web import authenticated
+
+from jupyterhub.handlers.base import BaseHandler
+from jupyterhub.orm import Group, User
+
+from ..orm import Dashboard
+from .base import DashboardBaseMixin, check_database_upgrade, spawner_to_dict
+from ..util import DefaultObjDict, url_path_join, maybe_future
+
+from .. import hookimpl
+from ..pluggymanager import pm
+from ..app import BuildersStore, CDSConfigStore
+
+
+class DashboardBaseHandler(BaseHandler, DashboardBaseMixin):
+    
+    def render_template(self, name, sync=False, **ns):
+        """
+        JupyterHub 1.3+ returns an awaitable from render_template (if new param sync=False).
+        Older JH versions just return the template, so this function normalizes everything to an awaitable.
+        """
+        return maybe_future(super().render_template(name, **ns))
+
+class AllDashboardsHandler(DashboardBaseHandler):
+
+    @authenticated
+    @check_database_upgrade
+    async def get(self):
+
+        cdsconfig = CDSConfigStore.get_instance(self.settings['config'])
+
+        current_user = await self.get_current_user()
+
+        my_dashboards = current_user.dashboards_own
+
+        if cdsconfig.spawn_as_viewer:
+            # Remove clones of template dashboards
+            my_dashboards = [d for d in my_dashboards if d.template_parent_id is None]
+
+        visitor_dashboard_groups = self.get_visitor_dashboards(current_user)
+
+        html = await self.render_template(
+            "alldashboards.html",
+            my_dashboards=my_dashboards,
+            visitor_dashboard_groups=visitor_dashboard_groups,
+            current_user=current_user,
+            can_spawn=self.can_user_spawn(current_user)
+        )
+        self.write(html)
+
+
+class BasicDashboardEditHandler(DashboardBaseHandler):
+
+    @authenticated
+    @check_database_upgrade
+    async def get(self, dashboard_urlname=None):
+
+        current_user = await self.get_current_user()
+
+        if not self.can_user_spawn(current_user):
+            return self.send_error(403)
+
+        cdsconfig = CDSConfigStore.get_instance(self.settings['config'])
+
+        dashboard = None
+        dashboard_name = self.get_argument('name', '').strip()
+        dashboard_description = self.get_argument('description', '').strip()
+        dashboard_presentation_type = ''
+        dashboard_start_path = self.get_argument('start_path', '').strip()
+        dashboard_options = {}
+        user_permissions = cdsconfig.default_allow_all and 'anyusers' or 'selectedusers'
+
+        if dashboard_urlname is not None:
+
+            dashboard = Dashboard.find(db=self.db, urlname=dashboard_urlname, user=current_user)
+
+            if dashboard is None:
+                return self.send_error(404)
+
+            if current_user.name != dashboard.user.name: # Only allowed to edit your own dashboard
+                return self.send_error(403)
+
+            if cdsconfig.spawn_as_viewer and dashboard.template_parent_id is not None:
+                html = await self.render_template(
+                    "templatedashboard.html",
+                    **self.template_vars(dict(
+                    dashboard=dashboard,
+                    parent_dashboard=dashboard.template_child_of)
+                    )
+                )
+                return self.write(html)
+
+            dashboard_name = dashboard.name
+            dashboard_description = dashboard.description
+            dashboard_start_path = dashboard.start_path or ''
+            dashboard_presentation_type = dashboard.presentation_type
+            dashboard_options = dashboard.options
+            user_permissions = dashboard.allow_all and 'anyusers' or 'selectedusers'
+
+        # Get List of possible visitor users
+        existing_group_users = None
+        if dashboard is not None and dashboard.group:
+            existing_group_users = dashboard.group.users
+
+        all_users_tuples = self.get_visitor_tuples(current_user.id, existing_group_users)
+
+        source_type = dashboard_options.get('source_type', 'jupytertree')
+        git_repo = ''
+        git_repo_branch = ''
+
+        if cdsconfig.show_source_git:
+            git_repo = dashboard_options.get('git_repo', '')
+            git_repo_branch = dashboard_options.get('git_repo_branch', '')
+        else:
+            source_type = 'jupytertree'
+
+        conda_env = dashboard_options.get('conda_env', '')
+
+        errors = DefaultObjDict()
+        
+        merged_presentation_types = cdsconfig.merged_presentation_types
+        all_conda_envs = cdsconfig.conda_envs
+        allow_custom_conda_env = cdsconfig.allow_custom_conda_env
+
+        html = await self.render_template(
+            "editdashboard.html",
+            **self.template_vars(dict(
+            dashboard=dashboard,
+            dashboard_name=dashboard_name,
+            dashboard_description=dashboard_description,
+            dashboard_start_path=dashboard_start_path,
+            dashboard_presentation_type=dashboard_presentation_type,
+            dashboard_options=dashboard_options,
+            source_type=source_type,
+            git_repo=git_repo,
+            git_repo_branch=git_repo_branch,
+            conda_env=conda_env,
+            presentation_types=merged_presentation_types,
+            all_conda_envs=all_conda_envs,
+            allow_custom_conda_env=allow_custom_conda_env,
+            current_user=current_user,
+            user_permissions=user_permissions,
+            show_source_git=cdsconfig.show_source_git,
+            all_users_tuples=all_users_tuples,
+            errors=errors)
+            )
+        )
+        self.write(html)
+
+    def template_vars(self, d):
+        return d
+
+    @authenticated
+    @check_database_upgrade
+    async def post(self, dashboard_urlname=None):
+
+        cdsconfig = CDSConfigStore.get_instance(self.settings['config'])
+
+        current_user = await self.get_current_user()
+
+        if not self.can_user_spawn(current_user):
+            return self.send_error(403)
+
+        dashboard = None
+        group = None
+
+        if dashboard_urlname is not None:
+            # Edit (not new)
+
+            dashboard = Dashboard.find(db=self.db, urlname=dashboard_urlname, user=current_user)
+
+            if dashboard is None:
+                return self.send_error(404)
+
+            if current_user.name != dashboard.user.name:
+                return self.send_error(403)
+
+            if cdsconfig.spawn_as_viewer and dashboard.template_parent_id is not None:
+                return self.send_error(403)
+
+            group = dashboard.group
+
+        dashboard_name = self.get_argument('name').strip()
+
+        dashboard_description = self.get_argument('description').strip()
+
+        dashboard_presentation_type = self.get_argument('presentation_type').strip()
+
+        dashboard_start_path = self.get_argument('start_path').strip()
+
+        errors = DefaultObjDict()
+
+        # source type (jupytertree or gitrepo) - to be added to dashboard_options later
+        git_repo = ''
+        git_repo_branch = ''
+        source_type = self.get_argument('source_type', '').strip()
+
+        if cdsconfig.show_source_git and source_type == 'gitrepo':
+            git_repo = self.get_argument('git_repo', '').strip()
+            git_repo_branch = self.get_argument('git_repo_branch', '').strip()
+
+            if git_repo != '':
+                if not re.match('^((git|ssh|http(s)?)|(git@[\w\.]+))(:(//)?)([\w\.@\:/\-~]+)(/)?$', git_repo):
+                    errors.git_repo = 'Please enter a valid git repo URL'
+        else:
+            source_type = 'jupytertree'
+
+        # Presentation basics
+
+        if dashboard_name == '':
+            errors.name = 'Please enter a name'
+        elif not self.name_regex.match(dashboard_name):
+            errors.name = 'Please use letters and digits (start with one of these), and then spaces or these characters _-!@$()*+?<>\'". Max 100 chars.'
+
+        jupyter_startpath_regex = None
+        if source_type == 'jupytertree' and cdsconfig.jupyter_startpath_regex != "":
+            try:
+                jupyter_startpath_regex = re.compile(cdsconfig.jupyter_startpath_regex)
+            except re.error as rerr:
+                self.log.warn('jupyter_startpath_regex ({}) cannot compile: {}'.format(cdsconfig.jupyter_startpath_regex, rerr))  
+
+        if '..' in dashboard_start_path:
+            errors.start_path = 'Path must not contain ..'
+        elif len(dashboard_start_path) and dashboard_start_path[0] == '/':
+            errors.start_path = 'Path must be relative to Jupyter tree home or Git repo root (not starting with /)'
+        elif not self.start_path_regex.match(dashboard_start_path):
+            errors.start_path = 'Please enter valid URL path characters'
+        elif jupyter_startpath_regex is not None and not jupyter_startpath_regex.match(dashboard_start_path):
+            errors.start_path = 'Path does not match the pattern specified by your admin ({})'.format(cdsconfig.jupyter_startpath_regex)
+
+        cdsconfig = CDSConfigStore.get_instance(self.settings['config'])
+
+        merged_presentation_types = cdsconfig.merged_presentation_types
+        all_conda_envs = cdsconfig.conda_envs
+        allow_custom_conda_env = cdsconfig.allow_custom_conda_env
+        
+        if not dashboard_presentation_type in merged_presentation_types:
+            errors.presentation_type = 'Framework {} invalid - it must be one of the allowed types: {}'.format(
+                dashboard_presentation_type, ', '.join(merged_presentation_types)
+                )
+
+        # Visitors allowed
+        selected_users = self.get_arguments('selected_users[]')
+
+        selected_users_orm = self.db.query(User).filter(User.name.in_(selected_users)).all()
+
+        user_permissions = self.get_argument('user_permissions', cdsconfig.default_allow_all and 'anyusers' or 'selectedusers').strip()
+
+        if user_permissions not in ('anyusers', 'selectedusers'):
+            user_permissions = cdsconfig.default_allow_all and 'anyusers' or 'selectedusers'
+            errors.user_permissions = 'You must choose either anyusers or selectedusers'
+
+        # Dashboard options
+        dashboard_options = {}
+
+        conda_env = self.get_argument('conda_env', '').strip()
+
+        if conda_env != '':
+            if allow_custom_conda_env:
+                if not self.conda_env_regex.match(conda_env):
+                    errors.conda_env = 'Please use letters and digits, spaces or these characters _-!@$()*+?<>/\\\'".'
+                    conda_env = ''
+            elif conda_env not in all_conda_envs:
+                errors.conda_env = 'Please select a valid Conda env (\'{}\' is not in the allowed list)'.format(conda_env)
+                conda_env = ''
+
+        dashboard_options['source_type'] = source_type
+        dashboard_options['git_repo'] = git_repo
+        dashboard_options['git_repo_branch'] = git_repo_branch
+        dashboard_options['conda_env'] = conda_env
+
+
+        if len(errors) == 0:
+            db = self.db
+
+            try:
+
+                if dashboard is None:
+
+                    urlname = Dashboard.calc_urlname(dashboard_name, self.db)    
+
+                    self.log.debug('Final urlname is '+urlname)  
+
+                    dashboard = Dashboard(
+                        name=dashboard_name, urlname=urlname, user=current_user.orm_user, 
+                        description=dashboard_description, start_path=dashboard_start_path, 
+                        presentation_type=dashboard_presentation_type,
+                        options=dashboard_options,
+                        allow_all=user_permissions=='anyusers'
+                        )
+                    self.log.debug('dashboard urlname '+dashboard.urlname+', main name '+dashboard.name)
+
+                else:
+                    dashboard.name = dashboard_name
+                    dashboard.description = dashboard_description
+                    dashboard.start_path = dashboard_start_path
+                    dashboard.presentation_type = dashboard_presentation_type
+                    dashboard.options = dashboard_options
+                    allow_all=user_permissions=='anyusers'
+                    dashboard.allow_all=allow_all
+                    
+                if group is None:
+                    group = Group.find(db, dashboard.groupname)
+                    if group is None:
+                        group = Group(name=dashboard.groupname)
+                        self.db.add(group)
+                    dashboard.group = group
+
+                db.add(dashboard)
+
+                if self.sync_group(group, selected_users_orm):
+                    db.add(group)
+                    
+                db.commit()
+
+                # Now cancel any existing build and force a rebuild
+
+                builders_store = BuildersStore.get_instance(self.settings['config'])
+                builder = builders_store[dashboard]
+
+                dashboard_user = self._user_from_orm(dashboard.user.name)
+
+                next_page = await self.maybe_start_build(dashboard, dashboard_user, True)
+                # next_page can be progress/options/dashboard, but actually can't be anything because with force_start==True
+                # it will have set things off async!
+
+            except Exception as e:
+                errors.all = str(e)
+
+        if len(errors):
+
+            git_repo = dashboard_options['git_repo'] = dashboard_options.get('git_repo', '')
+            git_repo_branch = dashboard_options['git_repo_branch'] = dashboard_options.get('git_repo_branch', '')
+            conda_env = dashboard_options['conda_env'] = dashboard_options.get('conda_env', '')
+            all_users_tuples = self.get_visitor_tuples(current_user.id, selected_users_orm)
+
+            html = await self.render_template(
+                "editdashboard.html",
+                **self.template_vars(dict(
+                dashboard=dashboard,
+                dashboard_name=dashboard_name,
+                dashboard_description=dashboard_description,
+                dashboard_start_path=dashboard_start_path,
+                dashboard_presentation_type=dashboard_presentation_type,
+                dashboard_options=dashboard_options,
+                user_permissions=user_permissions,
+                git_repo=git_repo,
+                git_repo_branch=git_repo_branch,
+                source_type=source_type,
+                conda_env=conda_env,
+                presentation_types=merged_presentation_types,
+                all_conda_envs=all_conda_envs,
+                allow_custom_conda_env=allow_custom_conda_env,
+                show_source_git=cdsconfig.show_source_git,
+                all_users_tuples=all_users_tuples,
+                errors=errors,
+                current_user=current_user))
+            )
+            return self.write(html)
+        
+        self.redirect(url_path_join(self.settings['base_url'], "hub", "dashboards", dashboard.urlname))
+
+
+class DashboardOptionsHandler(DashboardBaseHandler):
+
+    @authenticated
+    @check_database_upgrade
+    async def get(self, dashboard_urlname):
+
+        current_user = await self.get_current_user()
+
+        cdsconfig = CDSConfigStore.get_instance(self.settings['config'])
+
+        dashboard = Dashboard.find(db=self.db, urlname=dashboard_urlname)
+
+        if dashboard is None:
+            return self.send_error(404)
+
+        if not dashboard.is_orm_user_allowed(current_user.orm_user):
+            return self.send_error(403)
+
+        builders_store = BuildersStore.get_instance(self.settings['config'])
+        builder = builders_store[dashboard]
+
+        dashboard_user = self._user_from_orm(dashboard.user.name)
+
+        next_page = await self.maybe_start_build(dashboard, dashboard_user, False)
+
+        if next_page == 'options':
+            self.log.info('Display options form')
+            options_not_allowed = False
+            need_user_options_form = builder._needs_user_options
+
+            if current_user.name != dashboard.user.name:
+                need_user_options_form = None
+                options_not_allowed = True
+
+            html = await self.render_template(
+                "dashboardoptions.html",
+                dashboard=dashboard,
+                current_user=current_user,
+                dashboard_user=dashboard.user,
+                user_options_form=need_user_options_form,
+                options_not_allowed=options_not_allowed
+            )
+            return self.write(html)
+
+        # The dashboard spawn is in progress, go to the main build page
+        return self.redirect(url_path_join(self.settings['base_url'], "hub", "dashboards", dashboard_urlname))
+
+    @authenticated
+    @check_database_upgrade
+    async def post(self, dashboard_urlname):
+
+        current_user = await self.get_current_user()
+
+        cdsconfig = CDSConfigStore.get_instance(self.settings['config'])
+
+        dashboard = Dashboard.find(db=self.db, urlname=dashboard_urlname)
+
+        if dashboard is None:
+            return self.send_error(404)
+
+        if not dashboard.is_orm_user_allowed(current_user.orm_user):
+            return self.send_error(403)
+
+        if current_user.name != dashboard.user.name:
+            return self.send_error(403)
+
+        form_options = {}
+        for key, byte_list in self.request.body_arguments.items():
+            form_options[key] = [bs.decode('utf8') for bs in byte_list]
+        for key, byte_list in self.request.files.items():
+            form_options["%s_file" % key] = byte_list
+
+
+        builders_store = BuildersStore.get_instance(self.settings['config'])
+        builder = builders_store[dashboard]
+        
+        next_page = await self.maybe_start_build(dashboard, current_user, True, form_options)
+
+        return self.redirect(url_path_join(self.settings['base_url'], "hub", "dashboards", dashboard_urlname))
+
+
+class MainViewDashboardHandler(DashboardBaseHandler):
+    
+    @authenticated
+    @check_database_upgrade
+    async def get(self, dashboard_urlname=''):
+
+        cdsconfig = CDSConfigStore.get_instance(self.settings['config'])
+
+        current_user = await self.get_current_user()
+
+        dashboard = self.db.query(Dashboard).filter(Dashboard.urlname==dashboard_urlname).one_or_none()
+
+        if dashboard is None:
+            return self.send_error(404)
+
+        if not dashboard.is_orm_user_allowed(current_user.orm_user):
+            return self.send_error(403)
+
+        dashboard_user = self._user_from_orm(dashboard.user.name)
+
+        if cdsconfig.spawn_as_viewer and dashboard_user != current_user:
+            # Clone the dashboard as a template
+            new_dashboard = await dashboard.clone_for_viewer(current_user, self.db)
+            return self.redirect(url_path_join(self.settings['base_url'], "hub", "dashboards", new_dashboard.urlname))
+
+        next_page = await self.maybe_start_build(dashboard, dashboard_user)
+
+        if next_page == 'options':
+            self.log.debug('Redirect to dashboard/options')
+            return self.redirect(url_path_join(self.settings['base_url'], "hub", "dashboards", dashboard_urlname, 'options'))
+
+        if next_page == 'dashboard':
+            return self.redirect(url_path_join(self.settings['base_url'], "user", dashboard_user.name, dashboard.final_spawner.name))
+
+        base_url = self.settings['base_url']
+
+        html = await self.render_template(
+            "viewdashboard.html",
+            dashboard=dashboard,
+            current_user=current_user,
+            dashboard_user=dashboard_user,
+            progress_url=url_path_join(base_url, 'hub', 'dashboards-api', dashboard_urlname, 'progress')
+        )
+        self.write(html)
+
+
+class ClearErrorDashboardHandler(DashboardBaseHandler):
+    
+    @authenticated
+    @check_database_upgrade
+    async def get(self, dashboard_urlname=''):
+
+        current_user = await self.get_current_user()
+
+        dashboard = self.db.query(Dashboard).filter(Dashboard.urlname==dashboard_urlname).one_or_none()
+
+        if dashboard is None:
+            pass # Redirect anyway, to let regular MainViewDashboardHandler handle the error
+
+        elif dashboard.is_orm_user_allowed(current_user.orm_user):
+            builders_store = BuildersStore.get_instance(self.settings['config'])
+
+            builder = builders_store[dashboard]
+
+            if not builder.pending and builder._build_future and builder._build_future.done() and builder._build_future.exception():
+                builder._build_future = None
+
+        self.redirect(url_path_join(self.settings['base_url'], "hub", "dashboards", dashboard_urlname))
+
+
+class UpgradeDashboardsHandler(DashboardBaseHandler):
+
+    @authenticated
+    async def get(self):
+
+        from ..dbutil import is_upgrade_needed
+
+        engine = self.db.get_bind()
+        if not is_upgrade_needed(engine):
+            return self.redirect("{}".format(self.settings['base_url']))
+
+        current_user = await self.get_current_user()
+
+        is_sqlite = str(engine.url).startswith('sqlite:///')
+
+        html = await self.render_template(
+            "upgrade-db.html",
+            is_admin=current_user.admin,
+            error='',
+            is_sqlite=is_sqlite,
+            success=False
+        )
+        self.write(html)
+
+    @authenticated
+    async def post(self):
+
+        current_user = await self.get_current_user()
+
+        if not current_user.admin:
+            return self.send_error(403)
+
+        error = ''
+        success = True
+
+        from ..dbutil import upgrade_if_needed
+
+        engine = self.db.get_bind()
+
+        is_sqlite = str(engine.url).startswith('sqlite:///')
+
+        try:
+            upgrade_if_needed(engine, log=self.log)
+        except Exception as e:
+            success = False
+            error = str(e)
+
+        html = await self.render_template(
+            "upgrade-db.html",
+            is_admin=current_user.admin,
+            error=error,
+            success=success,
+            is_sqlite=is_sqlite
+        )
+        self.write(html)
+
+
+class GroupsAllHandler(DashboardBaseHandler):
+
+    @authenticated
+    async def get(self):
+
+        current_user = await self.get_current_user()
+
+        if not current_user.admin:
+            return self.send_error(403)
+
+        groups = self.db.query(Group).order_by(Group.name).all()
+
+        html = await self.render_template(
+            "allgroups.html",
+            groups=groups
+        )
+        self.write(html)
+
+class GroupsSingleHandler(DashboardBaseHandler):
+
+    @authenticated
+    async def get(self, groupname):
+
+        current_user = await self.get_current_user()
+
+        if not current_user.admin:
+            return self.send_error(403)
+
+        group = Group.find(self.db, groupname)
+
+        if group is None:
+            return self.send_error(404)
+
+        errors = DefaultObjDict()
+
+        existing_group_users = group.users
+
+        all_users_tuples = self.get_visitor_tuples(None, existing_group_users)
+
+        html = await self.render_template(
+            "editgroup.html",
+            group=group,
+            errors=errors,
+            all_users_tuples=all_users_tuples
+        )
+        self.write(html)
+
+    @authenticated
+    async def post(self, groupname):
+
+        current_user = await self.get_current_user()
+
+        if not current_user.admin:
+            return self.send_error(403)
+
+        group = Group.find(self.db, groupname)
+
+        if group is None:
+            return self.send_error(404)
+
+        errors = DefaultObjDict()
+
+        existing_group_users = group.users
+
+        selected_users = self.get_arguments('selected_users[]')
+
+        selected_users_orm = self.db.query(User).filter(User.name.in_(selected_users)).all()
+
+        if self.sync_group(group, selected_users_orm):
+            self.db.add(group)            
+            self.db.commit()
+
+        self.redirect('{}hub/groupslist'.format(self.settings['base_url']))
+
+
+# Register plugin hooks so we use the Basic handlers by default, unless overridden
+
+@hookimpl
+def get_hubextension_main_DashboardEditHandler():
+    return BasicDashboardEditHandler
+
+pm.register(sys.modules[__name__])
+
+DashboardEditHandler = pm.hook.get_hubextension_main_DashboardEditHandler()[0]
