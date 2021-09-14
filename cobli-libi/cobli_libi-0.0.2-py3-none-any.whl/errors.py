@@ -1,0 +1,2 @@
+class RetrieveDataError(Exception):
+    pass 
