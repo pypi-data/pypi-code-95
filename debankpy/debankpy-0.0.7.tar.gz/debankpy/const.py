@@ -1,0 +1,6 @@
+HOST = "openapi.debank.com"
+URL = "https://openapi.debank.com/v1/user/"
+BALANCE_URL = URL + "total_balance?id={}"
+TOKEN_URL = URL + "token_list?id={}" + "&is_all=false"
+COMPLEX_PROTOCOL_URL = URL + "complex_protocol_list?id={}"
+PROTOCOL_URL = URL + "protocol?id={}&protocol_id={}"
