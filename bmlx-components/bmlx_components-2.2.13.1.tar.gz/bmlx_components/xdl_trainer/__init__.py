@@ -1,0 +1,1 @@
+from bmlx_components.xdl_trainer.component import XdlTrainer

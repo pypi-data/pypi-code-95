@@ -1,0 +1,1 @@
+from bmlx_components.sample_gen.component import SampleGen

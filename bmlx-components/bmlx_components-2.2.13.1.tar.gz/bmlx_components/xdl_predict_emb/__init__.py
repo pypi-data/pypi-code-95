@@ -1,0 +1,1 @@
+from bmlx_components.xdl_predict_emb.component import XdlPredictEmb
