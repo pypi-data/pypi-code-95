@@ -1,0 +1,1 @@
+from weeklcv.faceDetectionModule2021 import FaceDetector
