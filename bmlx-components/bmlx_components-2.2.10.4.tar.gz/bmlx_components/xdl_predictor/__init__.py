@@ -1,0 +1,1 @@
+from bmlx_components.xdl_predictor.component import XdlPredictor

@@ -1,0 +1,1 @@
+from bmlx_components.validate_sample_gen_v2.component import SampleGenV2
