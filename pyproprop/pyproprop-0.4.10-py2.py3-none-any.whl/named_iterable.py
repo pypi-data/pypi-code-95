@@ -1,0 +1,79 @@
+"""Utilities for creating attributes that support named dot-indexing.
+
+Named iterables are a way of defining instance attributes for a class that
+are able to support dot-indexing via user-specified names.
+
+Note
+----
+Docstrings need improving.
+
+"""
+
+from collections import namedtuple
+
+import sympy as sym
+
+__all__ = ["named_iterable"]
+
+
+def named_iterable(iterable, use_named=True, named_keys=None, sympify=False):
+    """Formats user supplied arguments as a named tuple.
+
+    Parameters
+    ----------
+    iterable : Iterable
+        Description
+    use_named : Optional[bool]
+        Description
+    named_keys : Optional[NamedTuple]
+        Description
+    sympify : Optional[bool]
+        Whether the values should be automatically converted to Sympy objects
+        before adding to the new iterable.
+
+    Returns
+    -------
+    named_tuple : `nametuple`
+        Formatted named iterable that is dot-indexible.
+    """
+    iterable, named_keys = make_iterable(iterable, named_keys)
+    if sympify:
+        entries = [sym.sympify(entry) for entry in iterable]
+    else:
+        entries = list(iterable)
+    if use_named:
+        if named_keys is None:
+            named_keys = [str(entry) for entry in entries]
+        NamedTuple = namedtuple("NamedTuple", named_keys)
+        formatted_entries = NamedTuple(*entries)
+    else:
+        formatted_entries = tuple(entries)
+
+    return formatted_entries
+
+
+def make_iterable(iterable, named_keys):
+    """
+    Parameters
+    ----------
+    iterable : Union[Any, Iterable[Any]]
+        Description
+    named_keys : TYPE
+        Description
+
+    Returns
+    -------
+    TYPE
+        Description
+
+    """
+    if not iterable:
+        return (), named_keys
+    try:
+        iter(iterable)
+    except TypeError:
+        return (iterable,), named_keys
+    try:
+        return iterable.values(), iterable.keys()
+    except AttributeError:
+        return iterable, named_keys
