@@ -1,0 +1,642 @@
+# (C) Copyright 2019-2021 Hewlett Packard Enterprise Development LP.
+# Apache License 2.0
+
+import pyaoscx.ospf_router
+
+from pyaoscx.exceptions.response_error import ResponseError
+from pyaoscx.exceptions.generic_op_error import GenericOperationError
+
+from pyaoscx.ospf_router import OspfRouter
+from pyaoscx.bgp_router import BgpRouter
+from pyaoscx.pyaoscx_module import PyaoscxModule
+from pyaoscx.static_route import StaticRoute
+from pyaoscx.vrf_address_family import VrfAddressFamily
+from pyaoscx.exceptions.verification_error import VerificationError
+
+import json
+import logging
+import re
+import pyaoscx.utils.util as utils
+from pyaoscx.utils.list_attributes import ListDescriptor
+
+
+class Vrf(PyaoscxModule):
+    '''
+    Provide configuration management for VRF on AOS-CX devices.
+    '''
+
+    base_uri = 'system/vrfs'
+    indices = ['name']
+    resource_uri_name = 'vrfs'
+
+    bgp_routers = ListDescriptor('bgp_routers')
+    address_families = ListDescriptor('address_families')
+    ospf_routers = ListDescriptor('ospf_routers')
+    static_routes = ListDescriptor('static_routes')
+
+    def __init__(self, session, name, uri=None, **kwargs):
+
+        self.session = session
+        self._uri = uri
+        self.name = name
+        # List used to determine attributes related to the VRF configuration
+        self.config_attrs = []
+        self.materialized = False
+        # Attribute dictionary used to manage the original data
+        # obtained from the GET
+        self.__original_attributes = {}
+        # Set arguments needed for correct creation
+        utils.set_creation_attrs(self, **kwargs)
+
+        # Use to manage BGP Routers
+        self.bgp_routers = []
+        # Use to manage Vrf Address Families
+        self.address_families = []
+        # Use to manage OSPF Routers
+        self.ospf_routers = []
+        # Use to manage Static Routes
+        self.static_routes = []
+        # Attribute used to know if object was changed recently
+        self.__modified = False
+
+    @PyaoscxModule.connected
+    def get(self, depth=None, selector=None):
+        '''
+        Perform a GET call to retrieve data for a VRF table entry and fill the
+        class with the incoming attributes
+
+        :param depth: Integer deciding how many levels into the API JSON that
+            references will be returned.
+        :param selector: Alphanumeric option to select specific information
+            to return.
+        :return: Returns True if there is not an exception raised
+        '''
+        logging.info("Retrieving the switch VRF")
+
+        depth = self.session.api.default_depth if depth is \
+            None else depth
+        selector = self.session.api.default_selector if selector\
+            is None else selector
+
+        if not self.session.api.valid_depth(depth):
+            depths = self.session.api.valid_depths
+            raise Exception("ERROR: Depth should be {}".format(depths))
+
+        if selector not in self.session.api.valid_selectors:
+            selectors = ' '.join(self.session.api.valid_selectors)
+            raise Exception(
+                "ERROR: Selector should be one of {}".format(selectors))
+
+        payload = {
+            "depth": depth,
+            "selector": selector
+        }
+
+        uri = "{base_url}{class_uri}/{name}".format(
+            base_url=self.session.base_url,
+            class_uri=Vrf.base_uri,
+            name=self.name
+        )
+
+        try:
+            response = self.session.s.get(
+                uri, verify=False, params=payload, proxies=self.session.proxy)
+
+        except Exception as e:
+            raise ResponseError('GET', e)
+
+        if not utils._response_ok(response, "GET"):
+            raise GenericOperationError(response.text, response.status_code)
+
+        data = json.loads(response.text)
+        # Delete unwanted data
+        if 'ospf_routers' in data:
+            data.pop('ospf_routers')
+            data.pop('bgp_routers')
+        if 'static_routes' in data:
+            data.pop("static_routes")
+
+        # Add dictionary as attributes for the object
+        utils.create_attrs(self, data)
+
+        # Determines if the VRF is configurable
+        if selector in self.session.api.configurable_selectors:
+            # Set self.config_attrs and delete ID from it
+            utils.set_config_attrs(self, data, 'config_attrs', [
+                'name', 'type', 'bgp_routers',
+                'ospf_routers', 'vrf_address_families',
+                'static_routes'])
+
+        # Set original attributes
+        self.__original_attributes = data
+        # Remove ID
+        if 'name' in self.__original_attributes:
+            self.__original_attributes.pop('name')
+        # Remove type
+        if 'type' in self.__original_attributes:
+            self.__original_attributes.pop('type')
+        # Remove bgp_routers
+        if 'bgp_routers' in self.__original_attributes:
+            self.__original_attributes.pop('bgp_routers')
+        # Remove ospf_routers
+        if 'ospf_routers' in self.__original_attributes:
+            self.__original_attributes.pop('ospf_routers')
+        # Remove static_routes
+        if 'static_routes' in self.__original_attributes:
+            self.__original_attributes.pop('static_routes')
+        # Remove vrf_address_families
+        if 'vrf_address_families' in self.__original_attributes:
+            self.__original_attributes.pop('vrf_address_families')
+
+        # Sets object as materialized
+        # Information is loaded from the Device
+        self.materialized = True
+
+        # Clean BGP Router settings
+        if self.bgp_routers == []:
+            # Set BGP Routers if any
+            # Adds bgp_bouters to parent Vrf object
+            BgpRouter.get_all(self.session, self)
+
+        # Clean Address Families settings
+        if self.address_families == []:
+            # Set Address Families if any
+            # Adds address_families to parent Vrf object
+            VrfAddressFamily.get_all(self.session, self)
+
+        # Clean OSPF Routers settings
+        if self.ospf_routers == []:
+            # Set OSPF Routers if any
+            # Adds ospf_routers to parent Vrf object
+            OspfRouter.get_all(self.session, self)
+
+        # Clean Static Routess settings
+        if self.static_routes == []:
+            # Set Static Route if any
+            # Adds static_routes to parent Vrf object
+            StaticRoute.get_all(self.session, self)
+        return True
+
+    @classmethod
+    def get_all(cls, session):
+        '''
+        Perform a GET call to retrieve all system VRFs and create a dictionary containing them
+        :param cls: Object's class
+        :param session: pyaoscx.Session object used to represent a logical
+            connection to the device
+        :return: Dictionary containing VRF names as keys and a Vrf objects as
+            values
+        '''
+        logging.info("Retrieving the VRFs inside the switch")
+
+        uri = '{base_url}{class_uri}'.format(
+            base_url=session.base_url,
+            class_uri=Vrf.base_uri
+        )
+
+        try:
+            response = session.s.get(uri, verify=False, proxies=session.proxy)
+        except Exception as e:
+            raise ResponseError('GET', e)
+
+        if not utils._response_ok(response, "GET"):
+            raise GenericOperationError(response.text, response.status_code)
+
+        data = json.loads(response.text)
+
+        vrfs_dict = {}
+        # Get all URI elements in the form of a list
+        uri_list = session.api.get_uri_from_data(data)
+
+        for uri in uri_list:
+            # Create Vrf object
+            name, vrf = Vrf.from_uri(session, uri)
+            # Set VRF in dictionary
+            vrfs_dict[name] = vrf
+
+        return vrfs_dict
+
+    @PyaoscxModule.connected
+    def apply(self):
+        '''
+        Main method used to either create or update an existing VRF table entry.
+        Checks whether the VRF exists in the switch
+        Calls self.update() if VRF is being updated
+        Calls self.create() if a new VRF is being created
+
+        :return modified: Boolean, True if object was created or modified
+            False otherwise
+        '''
+        modified = False
+        if self.materialized:
+            modified = self.update()
+        else:
+            modified = self.create()
+        # Set internal attribute
+        self.__modified = modified
+        return modified
+
+    @PyaoscxModule.connected
+    def update(self):
+        '''
+        Perform a PUT call to apply changes to an existing VRF table entry
+
+        :return modified: True if Object was modified and a PUT request was made.
+            False otherwise
+
+        '''
+        vrf_data = {}
+
+        vrf_data = utils.get_attrs(self, self.config_attrs)
+
+        uri = "{base_url}{class_uri}/{name}".format(
+            base_url=self.session.base_url,
+            class_uri=Vrf.base_uri,
+            name=self.name
+        )
+
+        # Compare dictionaries
+        # if vrf_data == self.__original_attributes:
+        if json.dumps(
+            vrf_data, sort_keys=True, indent=4) == \
+                json.dumps(
+                    self.__original_attributes, sort_keys=True, indent=4):
+            # Object was not modified
+            modified = False
+
+        else:
+            post_data = json.dumps(vrf_data, sort_keys=True, indent=4)
+
+            try:
+                response = self.session.s.put(
+                    uri, verify=False, data=post_data,
+                    proxies=self.session.proxy)
+
+            except Exception as e:
+                raise ResponseError('PUT', e)
+
+            if not utils._response_ok(response, "PUT"):
+                raise GenericOperationError(
+                    response.text, response.status_code)
+
+            else:
+                logging.info(
+                    "SUCCESS: Adding VRF table entry '%s' succeeded" %
+                    self.name)
+            # Set new original attributes
+            self.__original_attributes = vrf_data
+            modified = True
+        return modified
+
+    @PyaoscxModule.connected
+    def create(self):
+        '''
+        Perform a POST call to create a new VRF using the object's attributes
+        as POST body
+        Only returns if an exception is not raise
+
+        :return modified: Boolean, True if entry was created
+        '''
+
+        vrf_data = {}
+        vrf_data = utils.get_attrs(self, self.config_attrs)
+
+        vrf_data['name'] = self.name
+
+        uri = "{base_url}{class_uri}".format(
+            base_url=self.session.base_url,
+            class_uri=Vrf.base_uri
+        )
+
+        post_data = json.dumps(vrf_data, sort_keys=True, indent=4)
+        try:
+            response = self.session.s.post(
+                uri, verify=False, data=post_data, proxies=self.session.proxy)
+
+        except Exception as e:
+            raise ResponseError('POST', e)
+
+        if not utils._response_ok(response, "POST"):
+            raise GenericOperationError(response.text, response.status_code)
+
+        else:
+            logging.info(
+                "SUCCESS: Adding VRF table entry '%s' succeeded" % self.name)
+
+        # Get all objects data
+        self.get()
+
+        # Object was modified
+        return True
+
+    @PyaoscxModule.connected
+    def delete(self):
+        '''
+        Perform DELETE call to delete VRF table entry.
+
+        '''
+
+        # Delete object attributes
+        utils.delete_attrs(self, self.config_attrs)
+
+        uri = "{base_url}{class_uri}/{name}".format(
+            base_url=self.session.base_url,
+            class_uri=Vrf.base_uri,
+            name=self.name
+        )
+
+        try:
+            response = self.session.s.delete(
+                uri, verify=False, proxies=self.session.proxy)
+
+        except Exception as e:
+            raise ResponseError('DELETE', e)
+
+        if not utils._response_ok(response, "DELETE"):
+            raise GenericOperationError(response.text, response.status_code)
+
+        else:
+            logging.info(
+                "SUCCESS: Delete VRF table entry '%s' succeeded" % self.name)
+
+    @classmethod
+    def from_response(cls, session, response_data):
+        '''
+        Create a Vrf object given a response_data related to the Vrf object
+        :param cls: Object's class
+        :param session: pyaoscx.Session object used to represent a logical
+            connection to the device
+        :param response_data: The response can be either a
+            dictionary:
+                {
+                    "test_vrf": "/rest/v10.04/system/vrfs/test_vrf"
+                }
+            or a
+            string: "/rest/v1/system/vrfs/test_vrf"
+        :return: Vrf object
+
+        '''
+        vrf_name_arr = session.api.get_keys(
+            response_data, Vrf.resource_uri_name)
+        vrf_name = vrf_name_arr[0]
+        return Vrf(session, vrf_name)
+
+    @classmethod
+    def from_uri(cls, session, uri):
+        '''
+        Create a Vrf object given a VRF URI
+        :param session: pyaoscx.Session object used to represent a logical
+            connection to the device
+        :param uri: a String with a URI
+
+        :return name, vrf_obj: tuple containing both the VRF's name and a Vrf
+            object
+        '''
+        # Obtain ID from URI
+        index_pattern = re.compile(r'(.*)vrfs/(?P<index>.+)')
+        name = index_pattern.match(uri).group('index')
+        # Create vlan object
+        vrf_obj = Vrf(session, name, uri=uri)
+
+        return name, vrf_obj
+
+    @classmethod
+    def get_facts(cls, session):
+        '''
+        Modify this to Perform a GET call to retrieve all VRFs and their respective data
+        :param cls: Class reference.
+        :param session: pyaoscx.Session object used to represent a logical
+            connection to the device.
+
+        :return facts: Dictionary containing VRF IDs as keys and VRF objects as values
+
+        '''
+        # Log
+        logging.info("Retrieving switch VRF facts")
+
+        # Set VRF facts depth
+        vrf_depth = session.api.default_facts_depth
+
+        # Build URI
+        uri = "{base_url}{class_uri}?depth={depth}".format(
+            base_url=session.base_url,
+            class_uri=Vrf.base_uri,
+            depth=vrf_depth
+        )
+
+        try:
+            # Try to get facts data via GET method
+            response = session.s.get(
+                uri,
+                verify=False,
+                proxies=session.proxy
+            )
+
+        except Exception as e:
+            raise ResponseError('GET', e)
+        if not utils._response_ok(response, "GET"):
+            raise GenericOperationError(response.text, response.status_code)
+
+        # Load response text into json format
+        facts = json.loads(response.text)
+
+        return facts
+
+    def get_uri(self):
+        '''
+        Method used to obtain the specific VRF URI
+        return: Object's URI
+        '''
+        if self._uri is None:
+            self._uri = '{resource_prefix}{class_uri}/{name}'.format(
+                resource_prefix=self.session.resource_prefix,
+                class_uri=Vrf.base_uri,
+                name=self.name
+            )
+
+        return self._uri
+
+    def get_info_format(self):
+        '''
+        Method used to obtain correct object format for referencing inside
+        other objects
+        return: Object format depending on the API Version
+        '''
+        return self.session.api.get_index(self)
+
+    def __str__(self):
+        return "VRF name: '{}'".format(self.name)
+
+    def was_modified(self):
+        """
+        Getter method for the __modified attribute
+        :return: Boolean True if the object was recently modified, False otherwise.
+        """
+
+        return self.__modified
+
+    ####################################################################
+    # IMPERATIVES FUNCTIONS
+    ####################################################################
+
+    def add_address_family(self, family_type="ipv4_unicast", export_target=[],
+                           import_targets=[]):
+        """
+        Add a VRF Address Family to the current Vrf object
+
+        :param family_type: Alphanumeric type of the Address Family.
+            The options are 'ipv4_unicast' and 'ipv6_unicast'.
+            The default value is set to 'ipv4_unicast'.
+        :param export_target: Optional list of export route targets.
+        :param import_targets: Optional list of import route targets
+
+        :return address_family: VrfAddressFamily Object
+        """
+
+        if not self.materialized:
+            raise VerificationError(
+                'VRF {}'.format(self.name),
+                'Object not materialized')
+
+        # Verify if incoming address is a string
+        if isinstance(family_type, str):
+            # Create Vrf_Family_Address object -- add it to it's internal
+            # address_families
+            vrf_address_family = self.session.api.get_module(
+                self.session, 'VrfAddressFamily', family_type,
+                parent_vrf=self,
+                export_route_targets=export_target,
+                import_route_targets=import_targets,
+                route_map={})
+            # Try to get data, if non existent create
+            try:
+                # Try to obtain vrf_address_family address data
+                vrf_address_family.get()
+            # If vrf_address_family object is non existent, create it
+            except GenericOperationError:
+                # Create vrf_address_family inside switch
+                vrf_address_family.apply()
+
+        # Apply changes inside switch
+        self.apply()
+
+        return vrf_address_family
+
+    def delete_address_family(self, family_type="ipv4_unicast"):
+        """
+        Given a address family type, delete that address from the current
+        Vrf object.
+
+        :param family_type: Alphanumeric type of the Address Family.
+            The options are 'ipv4_unicast' and 'ipv6_unicast'.
+            A VrfAddressFamily object is accepted.
+            The default value is set to 'ipv4_unicast'.
+
+        """
+
+        if not self.materialized:
+            raise VerificationError(
+                'VRF {}'.format(self.name),
+                'Object not materialized')
+
+        # Verify if incoming address is a object
+        if isinstance(family_type, VrfAddressFamily):
+            # Obtain address
+            family_type = family_type.address_family
+
+        # Iterate through every address inside interface
+        for add_family_obj in self.address_families:
+            if add_family_obj.address_family == family_type:
+                # Removing address does an internal delete
+                self.address_families.remove(add_family_obj)
+
+    def setup_dns(self, domain_name=None, domain_list=None,
+                  domain_servers=None, host_v4_address_mapping=None,
+                  host_v6_address_mapping=None):
+        """
+        Setup DNS client configuration within a VRF.
+
+        :param domain_name: Domain name used for name resolution by
+            the DNS client, if 'dns_domain_list' is not configured
+        :param domain_list: dict of DNS Domain list names to be used for
+            address resolution, keyed by the resolution priority order
+            Example:
+                {
+                    0: "hpe.com"
+                    1: "arubanetworks.com"
+                }
+        :param domain_servers: dict of DNS Name servers to be used for address
+            resolution, keyed by the resolution priority order
+            Example:
+                {
+                    0: "4.4.4.10"
+                    1: "4.4.4.12"
+                }
+        :param host_v4_address_mapping: dict of static host
+            address configurations and the IPv4 address associated with them
+            Example:
+                {
+                    "host1": "5.5.44.5"
+                    "host2": "2.2.44.2"
+                }
+        :param host_v6_address_mapping: dict of static host
+            address configurations and the IPv6 address associated with them
+            Example:
+                {
+                    "host1": "2001:0db8:85a3:0000:0000:8a2e:0370:7334"
+                }
+        :return modified: Returns True if modified, False
+            otherwise
+        """
+        # Update Values
+
+        if domain_name is not None:
+            self.dns_domain_name = domain_name
+
+        if domain_list is not None:
+            self.dns_domain_list = domain_list
+
+        if domain_servers is not None:
+            self.dns_name_servers = domain_servers
+
+        if host_v4_address_mapping is not None:
+            self.dns_host_v4_address_mapping = host_v4_address_mapping
+
+        if host_v6_address_mapping is not None:
+            self.dns_host_v6_address_mapping = host_v6_address_mapping
+
+        return self.apply()
+
+    def delete_dns(self, domain_name=None, domain_list=None,
+                   domain_servers=None, host_v4_address_mapping=None,
+                   host_v6_address_mapping=None):
+        """
+        Delete DNS client configuration within a Vrf object.
+
+        :param domain_name: If value is not None, it is deleted
+        :param domain_list: If value is not None, it is deleted
+        :param domain_servers: If value is not None, it is deleted
+        :param host_v4_address_mapping: If value is not None, it is deleted
+        :param host_v6_address_mapping: If value is not None, it is deleted
+
+        :return modified: Returns True if modified, False
+            otherwise
+        """
+        # Update Values
+
+        if domain_name is not None:
+            self.dns_domain_name = None
+
+        if domain_list is not None:
+            self.dns_domain_list = None
+
+        if domain_servers is not None:
+            self.dns_name_servers = None
+
+        if host_v4_address_mapping is not None:
+            self.dns_host_v4_address_mapping = None
+
+        if host_v6_address_mapping is not None:
+            self.dns_host_v6_address_mapping = None
+
+        return self.apply()
