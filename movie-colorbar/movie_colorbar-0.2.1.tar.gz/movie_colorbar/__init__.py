@@ -1,0 +1,7 @@
+__title__ = "movie_colorbar"
+__description__ = "A simple script to turn a video into a colorbar."
+__url__ = "https://github.com/fsoubelet/Movie_Colorbar"
+__version__ = "0.2.1"
+__author__ = "Felix Soubelet"
+__author_email__ = "felix.soubelet@liverpool.ac.uk"
+__license__ = "MIT"
