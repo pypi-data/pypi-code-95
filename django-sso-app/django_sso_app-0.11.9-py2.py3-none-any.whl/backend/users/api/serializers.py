@@ -1,0 +1,1 @@
+from django_sso_app.core.apps.users.serializers import UserSerializer
