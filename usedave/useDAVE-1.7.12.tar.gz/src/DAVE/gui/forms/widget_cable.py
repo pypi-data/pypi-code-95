@@ -1,0 +1,98 @@
+# -*- coding: utf-8 -*-
+
+# Form implementation generated from reading ui file 'widget_cable.ui',
+# licensing of 'widget_cable.ui' applies.
+#
+# Created: Tue Jun  9 08:30:22 2020
+#      by: pyside2-uic  running on PySide2 5.13.1
+#
+# WARNING! All changes made in this file will be lost!
+
+from PySide2 import QtCore, QtGui, QtWidgets
+
+class Ui_Cable_form(object):
+    def setupUi(self, Cable_form):
+        Cable_form.setObjectName("Cable_form")
+        Cable_form.resize(436, 706)
+        Cable_form.setLocale(QtCore.QLocale(QtCore.QLocale.English, QtCore.QLocale.UnitedStates))
+        self.verticalLayout = QtWidgets.QVBoxLayout(Cable_form)
+        self.verticalLayout.setObjectName("verticalLayout")
+        self.label_7 = QtWidgets.QLabel(Cable_form)
+        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
+        sizePolicy.setHorizontalStretch(0)
+        sizePolicy.setVerticalStretch(0)
+        sizePolicy.setHeightForWidth(self.label_7.sizePolicy().hasHeightForWidth())
+        self.label_7.setSizePolicy(sizePolicy)
+        self.label_7.setMaximumSize(QtCore.QSize(16777215, 30))
+        self.label_7.setAutoFillBackground(False)
+        self.label_7.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.label_7.setObjectName("label_7")
+        self.verticalLayout.addWidget(self.label_7)
+        self.frame_2 = QtWidgets.QFrame(Cable_form)
+        self.frame_2.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        self.frame_2.setFrameShadow(QtWidgets.QFrame.Raised)
+        self.frame_2.setObjectName("frame_2")
+        self.gridLayout = QtWidgets.QGridLayout(self.frame_2)
+        self.gridLayout.setObjectName("gridLayout")
+        self.doubleSpinBox_2 = QtWidgets.QDoubleSpinBox(self.frame_2)
+        self.doubleSpinBox_2.setLocale(QtCore.QLocale(QtCore.QLocale.English, QtCore.QLocale.UnitedStates))
+        self.doubleSpinBox_2.setDecimals(3)
+        self.doubleSpinBox_2.setMinimum(0.0)
+        self.doubleSpinBox_2.setMaximum(999999999999.0)
+        self.doubleSpinBox_2.setSingleStep(1000.0)
+        self.doubleSpinBox_2.setObjectName("doubleSpinBox_2")
+        self.gridLayout.addWidget(self.doubleSpinBox_2, 6, 1, 1, 1)
+        self.label = QtWidgets.QLabel(self.frame_2)
+        self.label.setObjectName("label")
+        self.gridLayout.addWidget(self.label, 3, 0, 1, 1)
+        self.doubleSpinBox_1 = QtWidgets.QDoubleSpinBox(self.frame_2)
+        self.doubleSpinBox_1.setLocale(QtCore.QLocale(QtCore.QLocale.English, QtCore.QLocale.UnitedStates))
+        self.doubleSpinBox_1.setDecimals(3)
+        self.doubleSpinBox_1.setMinimum(-1e+18)
+        self.doubleSpinBox_1.setMaximum(999999999999.0)
+        self.doubleSpinBox_1.setObjectName("doubleSpinBox_1")
+        self.gridLayout.addWidget(self.doubleSpinBox_1, 3, 1, 1, 1)
+        self.label_2 = QtWidgets.QLabel(self.frame_2)
+        self.label_2.setObjectName("label_2")
+        self.gridLayout.addWidget(self.label_2, 6, 0, 1, 1)
+        self.label_4 = QtWidgets.QLabel(self.frame_2)
+        self.label_4.setObjectName("label_4")
+        self.gridLayout.addWidget(self.label_4, 7, 0, 1, 1)
+        self.doubleSpinBox = QtWidgets.QDoubleSpinBox(self.frame_2)
+        self.doubleSpinBox.setDecimals(3)
+        self.doubleSpinBox.setSingleStep(0.001)
+        self.doubleSpinBox.setObjectName("doubleSpinBox")
+        self.gridLayout.addWidget(self.doubleSpinBox, 7, 1, 1, 1)
+        self.verticalLayout.addWidget(self.frame_2)
+        self.frame = QtWidgets.QFrame(Cable_form)
+        self.frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        self.frame.setFrameShadow(QtWidgets.QFrame.Raised)
+        self.frame.setObjectName("frame")
+        self.verticalLayout_2 = QtWidgets.QVBoxLayout(self.frame)
+        self.verticalLayout_2.setObjectName("verticalLayout_2")
+        self.label_3 = QtWidgets.QLabel(self.frame)
+        self.label_3.setWordWrap(True)
+        self.label_3.setIndent(-1)
+        self.label_3.setObjectName("label_3")
+        self.verticalLayout_2.addWidget(self.label_3)
+        self.list = QtWidgets.QListWidget(self.frame)
+        self.list.setObjectName("list")
+        self.verticalLayout_2.addWidget(self.list)
+        self.pbRemoveSelected = QtWidgets.QPushButton(self.frame)
+        self.pbRemoveSelected.setObjectName("pbRemoveSelected")
+        self.verticalLayout_2.addWidget(self.pbRemoveSelected)
+        self.verticalLayout.addWidget(self.frame)
+
+        self.retranslateUi(Cable_form)
+        QtCore.QMetaObject.connectSlotsByName(Cable_form)
+        Cable_form.setTabOrder(self.doubleSpinBox_1, self.doubleSpinBox_2)
+
+    def retranslateUi(self, Cable_form):
+        Cable_form.setWindowTitle(QtWidgets.QApplication.translate("Cable_form", "Form", None, -1))
+        self.label_7.setText(QtWidgets.QApplication.translate("Cable_form", "<html><head/><body><p><span style=\" font-weight:600; text-decoration: underline;\">Cable properties</span></p></body></html>", None, -1))
+        self.label.setText(QtWidgets.QApplication.translate("Cable_form", "Length at rest [m]", None, -1))
+        self.label_2.setText(QtWidgets.QApplication.translate("Cable_form", "Stiffness EA [kN]", None, -1))
+        self.label_4.setText(QtWidgets.QApplication.translate("Cable_form", "Diameter [m]", None, -1))
+        self.label_3.setText(QtWidgets.QApplication.translate("Cable_form", "<html><head/><body><p>Points of the cable</p><p>drag/drop to modify</p></body></html>", None, -1))
+        self.pbRemoveSelected.setText(QtWidgets.QApplication.translate("Cable_form", "remove selected point", None, -1))
+
