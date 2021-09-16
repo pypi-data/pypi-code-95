@@ -1,0 +1,1 @@
+from ._desktop_session_definition import Definition
