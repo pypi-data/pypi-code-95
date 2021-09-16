@@ -1,0 +1,1 @@
+from finaltype import final
