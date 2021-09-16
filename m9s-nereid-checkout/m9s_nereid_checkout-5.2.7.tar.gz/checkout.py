@@ -1,0 +1,954 @@
+# The COPYRIGHT file at the top level of this repository contains
+# the full copyright notices and license terms.
+from datetime import datetime
+from functools import wraps
+from decimal import Decimal
+
+from wtforms import StringField, RadioField, validators, PasswordField, \
+    ValidationError, SelectField, BooleanField
+from flask_login import login_user
+from flask_wtf import FlaskForm as Form
+from werkzeug.exceptions import abort
+from werkzeug.wrappers import BaseResponse
+
+from trytond.model import ModelView, fields
+from trytond.pool import Pool, PoolMeta
+from trytond.transaction import Transaction
+
+from nereid import render_template, request, url_for, flash, redirect, \
+    current_app, current_user, route, login_required, current_website
+from nereid.signals import failed_login
+from nereid.globals import session
+from nereid.contrib.locale import make_lazy_gettext
+
+from .signals import cart_address_updated
+
+_ = make_lazy_gettext('nereid_checkout')
+
+
+class Cart(metaclass=PoolMeta):
+    __name__ = 'nereid.cart'
+
+    def get_alternate_payment_methods(self):
+        """
+        Get possible payment methods for this cart.
+
+        The default implementation returns all the possible payment methods
+        that exist in the website.
+
+        Downstream modules can additional filters to decide which payment
+        methods are available. For example, to limit COD below certain amount.
+        """
+        return self.website.alternate_payment_methods
+
+    def _clear_cart(self):
+        """
+        This version of `_clear_cart()` checks if any sale payments are present
+        in the Sale which is to be deleted. If there are, those are deleted
+        before the Sale itself is deleted.
+        """
+        pool = Pool()
+        SalePayment = pool.get('sale.payment')
+
+        if self.sale and self.sale.payments:
+            to_delete = [p for p in self.sale.payments
+                if not p.payment_transactions]
+            SalePayment.delete(to_delete)
+
+        super(Cart, self)._clear_cart()
+
+
+def not_empty_cart(function):
+    """
+    Ensure that the shopping cart of the current session is not empty. If it is
+    redirect to the shopping cart page.
+    """
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+        pool = Pool()
+        NereidCart = pool.get('nereid.cart')
+        cart = NereidCart.open_cart()
+        if not (cart.sale and cart.sale.lines):
+            current_app.logger.debug(
+                'No sale or lines. Redirect to shopping-cart'
+            )
+            return redirect(url_for('nereid.cart.view_cart'))
+        return function(*args, **kwargs)
+    return wrapper
+
+
+def sale_has_non_guest_party(function):
+    """
+    Ensure that the sale has a party who is not guest.
+
+    The sign-in method authomatically changes the party to a party based on the
+    session.
+    """
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+        pool = Pool()
+        NereidCart = pool.get('nereid.cart')
+        cart = NereidCart.open_cart()
+        if cart.sale and \
+                cart.sale.party == current_website.guest_user.party:
+            # The cart is owned by the guest user party
+            current_app.logger.debug(
+                'Cart is owned by guest. Redirect to sign-in'
+            )
+            return redirect(url_for('nereid.checkout.sign_in'))
+        return function(*args, **kwargs)
+    return wrapper
+
+
+def with_company_context(function):
+    '''
+    Executes the function within the context of the website company
+    '''
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+        with Transaction().set_context(
+                company=current_website.company.id):
+            return function(*args, **kwargs)
+    return wrapper
+
+
+class Party(metaclass=PoolMeta):
+    __name__ = 'party.party'
+
+    # The nereid session which created the party. This is used for
+    # vaccuming parties which dont need to exist, since they have only
+    # carts abandoned for a long time
+    nereid_session = fields.Char('Nereid Session')
+
+    def get_payment_profiles(self, method='credit_card'):
+        '''
+        Return all the payment profiles of the type
+        '''
+        pool = Pool()
+        PaymentProfile = pool.get('party.payment_profile')
+
+        return PaymentProfile.search([
+            ('party', '=', self.id),
+            ('gateway.method', '=', method),
+        ])
+
+
+class CreditCardForm(Form):
+    owner = StringField(_('Full Name on Card'), [validators.DataRequired(), ])
+    number = StringField(
+        _('Card Number'), [validators.DataRequired(),
+            validators.Length(max=20)]
+    )
+    expiry_month = SelectField(
+        _('Card Expiry Month'),
+        [validators.DataRequired(), validators.Length(min=2, max=2)],
+        choices=[
+            ('01', _('01-January')),
+            ('02', _('02-February')),
+            ('03', _('03-March')),
+            ('04', _('04-April')),
+            ('05', _('05-May')),
+            ('06', _('06-June')),
+            ('07', _('07-July')),
+            ('08', _('08-August')),
+            ('09', _('09-September')),
+            ('10', _('10-October')),
+            ('11', _('11-November')),
+            ('12', _('12-December')),
+        ]
+    )
+
+    current_year = datetime.utcnow().date().year
+    year_range = (current_year, current_year + 25)
+    expiry_year = SelectField(
+        _('Card Expiry Year'),
+        [validators.DataRequired(), validators.NumberRange(*year_range)],
+        coerce=int,
+    )
+    cvv = StringField(
+        _('CVD/CVV Number'),
+        [validators.DataRequired(), validators.Length(min=3, max=4)]
+    )
+    add_card_to_profiles = BooleanField('Save Card')
+
+    def __init__(self, *args, **kwargs):
+        super(CreditCardForm, self).__init__(*args, **kwargs)
+
+        # Set the expiry year values
+        self.expiry_year.choices = [
+            (year, year) for year in range(*self.year_range)
+        ]
+
+
+class PaymentForm(Form):
+    'Form to capture additional payment data'
+    use_shipment_address = BooleanField(
+        _('Use shipping address as billing address')
+    )
+    payment_profile = SelectField(
+        _('Choose a card'),
+        [validators.Optional()],
+        choices=[], coerce=int
+    )
+    alternate_payment_method = SelectField(
+        _('Alternate payment methods'),
+        [validators.Optional()],
+        choices=[], coerce=int
+    )
+
+
+class CheckoutSignInForm(Form):
+    "Checkout Sign-In Form"
+    email = StringField(
+        _('e-mail'), [validators.DataRequired(), validators.Email()])
+    password = PasswordField(_('Password'))
+    checkout_mode = RadioField(
+        'Checkout Mode', choices=[
+            ('guest', _('Checkout as a guest')),
+            ('account', _('Use my account')),
+        ]
+    )
+    remember = BooleanField(_('Remember Me'))
+
+    def validate_password(self, field):
+        if self.checkout_mode.data == 'account' and not field.data:
+            raise ValidationError(_('Password is required.'))
+
+
+class Checkout(ModelView):
+    'A checkout model'
+    __name__ = 'nereid.checkout'
+
+    # Downstream modules can change the form
+    sign_in_form = CheckoutSignInForm
+
+    @classmethod
+    def allowed_as_guest(cls, email):
+        """
+        Check if provided email can checkout as guest or force user to signin.
+        As current behaviour existing user should signin
+        """
+        pool = Pool()
+        NereidUser = pool.get('nereid.user')
+
+        existing = NereidUser.search([
+            ('email', '=', email),
+            ('company', '=', current_website.company.id),
+        ])
+
+        return not existing
+
+    @classmethod
+    @route('/checkout/sign-in', methods=['GET', 'POST'])
+    @not_empty_cart
+    def sign_in(cls):
+        '''
+        Step 1: Sign In or Register
+
+        GET
+        ~~~
+
+        Renders a sign-in or register page. If guest checkout is enabled, then
+        an option to continue as guest is also permitted, in which case the
+        email is a required field.
+
+        POST
+        ~~~~
+
+        For guest checkout, this sign in would create a new party with the name
+        as the current session_id and move the shopping cart's sale to the
+        new user's ownership
+
+        Designer notes: The registration or login must contact the
+        corresponding handlers. Login and Registraion handlers are designed to
+        handle a `next` parameter where the user would be redirected to if the
+        operation was successful. The next url is provided in the context
+
+        OTOH, if the user desires to checkout as guest, the user is required to
+        fill in the email and submit the form, which posts the email to this
+        handler.
+        '''
+        pool = Pool()
+        NereidCart = pool.get('nereid.cart')
+        NereidUser = pool.get('nereid.user')
+        Party = pool.get('party.party')
+
+        if not current_user.is_anonymous:
+            form = cls.sign_in_form(
+                email=current_user.email,
+                checkout_mode='account',
+            )
+        else:
+            # Guest user
+            form = cls.sign_in_form(
+                email=session.get('email'),
+                checkout_mode='guest',
+            )
+
+        if form.validate_on_submit():
+            if form.checkout_mode.data == 'guest':
+
+                if not cls.allowed_as_guest(form.email.data):
+                    return render_template(
+                        'checkout/signin-email-in-use.jinja',
+                        email=form.email.data
+                    )
+
+                cart = NereidCart.open_cart()
+                party_name = str(_(
+                    'Guest with email: %(email)s', email=form.email.data
+                ))
+                if cart.sale.party == current_website.guest_user.party:
+                    # Create a party with the email as email, and session as
+                    # name, but attach the session to it.
+                    party, = Party.create([{
+                        'name': party_name,
+                        'nereid_session': session.sid,
+                        'addresses': [],
+                        'contact_mechanisms': [('create', [{
+                            'type': 'email',
+                            'value': form.email.data,
+                        }])]
+                    }])
+
+                    cart.sale.party = party
+                    # TODO: Avoid this if the user comes to sign-in twice.
+                    cart.sale.shipment_address = None
+                    cart.sale.invoice_address = None
+                    cart.sale.save()
+                else:
+                    # Perhaps the email changed ?
+                    party = cart.sale.party
+                    party.name = party_name
+
+                    # contact_mechanism of email type will always be there for
+                    # Guest user
+                    contact_mechanism = list(filter(lambda c: c.type == 'email',
+                            party.contact_mechanisms))[0]
+                    contact_mechanism.value = form.email.data
+                    contact_mechanism.save()
+                    party.email = form.email.data
+                    party.save()
+
+                return redirect(
+                    url_for('nereid.checkout.shipping_address')
+                )
+            else:
+                # The user wants to use existing email to login
+                user = NereidUser.authenticate(
+                    form.email.data, form.password.data
+                )
+                if user:
+                    # FIXME: Remove remember_me
+                    login_user(user, remember=form.remember.data)
+                    return redirect(
+                        url_for('nereid.checkout.shipping_address')
+                    )
+                else:
+                    flash(_('Either username or password is incorrect'))
+                    failed_login.send()
+
+        if not current_user.is_anonymous:
+            # Registered user with a fresh login can directly proceed to
+            # step 2, which is filling the shipping address
+            #
+            # if this is a recent sign-in by a registred user
+            # automatically proceed to the shipping_address step
+            return redirect(url_for('nereid.checkout.shipping_address'))
+
+        return render_template(
+            'checkout/signin.jinja',
+            form=form,
+            next=url_for('nereid.checkout.shipping_address')
+        )
+
+    @classmethod
+    def get_new_address_form(cls, address=None):
+        '''
+        Returns a WTForm class which should be used for form validation when a
+        new address is created as part of shipping or billing address during
+        checkout.
+
+        This is separately maintained to make it easier for customisation.
+
+        By default the form returned is the same form as that of NereidUser
+        registration.
+
+        :param address: The address from which to fill data
+        '''
+        pool = Pool()
+        Address = pool.get('party.address')
+        return Address.get_address_form(address)
+
+    @classmethod
+    @route('/checkout/shipping-address', methods=['GET', 'POST'])
+    @not_empty_cart
+    @sale_has_non_guest_party
+    def shipping_address(cls):
+        '''
+        Choose or Create a shipping address
+
+        Guest users are only allowed to create a new address while registered
+        users are allowed to either choose an address or create a new one.
+
+        GET
+        ~~~
+
+        Renders the shipping_address selection/creation page.
+
+        The template context would have an addresses variable which carries a
+        list of addresses in the case of registered users. For guest users the
+        variable would be empty.
+
+        POST
+        ~~~~
+
+        **Registered User**: If `address` (the id of the chosen address) is in
+        the POST values, then the address is validated and stored as the
+        `shipment_address` in the sale. If not, the new address form is
+        validated to see if a new address has to be created for the party.
+
+        **Guest User**: New address data has to be provided and validated to
+        create the new address.
+
+        Once the address is set succesfully, the delivery_options page is shown
+        '''
+        pool = Pool()
+        NereidCart = pool.get('nereid.cart')
+        Address = pool.get('party.address')
+
+        cart = NereidCart.open_cart()
+
+        address = None
+        if current_user.is_anonymous and cart.sale.shipment_address:
+            address = cart.sale.shipment_address
+
+        address_form = cls.get_new_address_form(address)
+
+        if request.method == 'POST':
+            if not current_user.is_anonymous and request.form.get('address'):
+                # Registered user has chosen an existing address
+                address = Address(request.form.get('address', type=int))
+
+                if address.party != cart.sale.party:
+                    flash(_('The address chosen is not valid'))
+                    return redirect(
+                        url_for('nereid.checkout.shipping_address')
+                    )
+
+            else:
+                # Guest user or registered user creating an address. Only
+                # difference is that the party of address depends on guest or
+                # not
+                if not address_form.validate():
+                    address = None
+                else:
+                    if current_user.is_anonymous and \
+                            cart.sale.shipment_address:
+                        # Save to the same address if the guest user
+                        # is just trying to update the address
+                        address = cart.sale.shipment_address
+                    else:
+                        address = Address()
+
+                    address.party = cart.sale.party
+                    address.party_name = address_form.name.data
+                    address.street = address_form.street.data
+                    address.zip = address_form.zip.data
+                    address.city = address_form.city.data
+                    address.country = address_form.country.data
+                    address.subdivision = address_form.subdivision.data
+
+                    if address_form.phone.data:
+                        address.phone = address_form.phone.data
+                    address.save()
+
+            if address is not None:
+                # Finally save the address to the shipment
+                cart.sale.shipment_address = address
+                cart.sale.save()
+                # Reprocess sale lines to get correct taxes according to
+                # destination country
+                cart.sale.reprocess_sale_lines()
+                cart_address_updated.send(cart)
+
+                return redirect(
+                    url_for('nereid.checkout.validate_address')
+                )
+
+        addresses = []
+        if not current_user.is_anonymous:
+            addresses.extend(current_user.party.addresses)
+
+        return render_template(
+            'checkout/shipping_address.jinja',
+            addresses=addresses,
+            address_form=address_form,
+        )
+
+    @classmethod
+    @route('/checkout/delivery-method', methods=['GET', 'POST'])
+    @not_empty_cart
+    @sale_has_non_guest_party
+    def delivery_method(cls):
+        '''
+        Selection of delivery method (options)
+
+        Based on the shipping address selected, the delivery options
+        could be shown to the user. This may include choosing shipping speed
+        and if there are multiple items, the option to choose items as they are
+        available or all at once.
+        '''
+        pool = Pool()
+        NereidCart = pool.get('nereid.cart')
+
+        cart = NereidCart.open_cart()
+
+        if not cart.sale.shipment_address:
+            return redirect(url_for('nereid.checkout.shipping_address'))
+
+        # TODO: Not implemented yet
+        return redirect(url_for('nereid.checkout.payment_method'))
+
+    @classmethod
+    @route('/checkout/validate-address', methods=['GET', 'POST'])
+    @not_empty_cart
+    @sale_has_non_guest_party
+    def validate_address(cls):
+        '''
+        Validation of shipping address (optional)
+
+        Shipping address can be validated and address suggestions could be shown
+        to the user. Here user can chooose address from suggestion and update
+        the saved address on `POST`
+        '''
+        pool = Pool()
+        NereidCart = pool.get('nereid.cart')
+
+        cart = NereidCart.open_cart()
+
+        if not cart.sale.shipment_address:
+            return redirect(url_for('nereid.checkout.shipping_address'))
+
+        return redirect(url_for('nereid.checkout.delivery_method'))
+
+    @classmethod
+    @route('/checkout/billing-address', methods=['GET', 'POST'])
+    @not_empty_cart
+    @sale_has_non_guest_party
+    def billing_address(cls):
+        '''
+        Choose or Create a billing address
+        '''
+        pool = Pool()
+        NereidCart = pool.get('nereid.cart')
+        Address = pool.get('party.address')
+        PaymentProfile = pool.get('party.payment_profile')
+
+        cart = NereidCart.open_cart()
+
+        address = None
+        if current_user.is_anonymous and cart.sale.invoice_address:
+            address = cart.sale.invoice_address
+
+        address_form = cls.get_new_address_form(address)
+
+        if request.method == 'POST':
+            if request.form.get('use_shipment_address'):
+                if not cart.sale.shipment_address:
+                    # Without defining shipment address, the user is
+                    # trying to set invoice_address as shipment_address
+                    return redirect(
+                        url_for('nereid.checkout.shipping_address')
+                    )
+                cart.sale.invoice_address = cart.sale.shipment_address
+                cart.sale.save()
+                cart.sale.invoice_address.invoice = True
+                cart.sale.invoice_address.save()
+
+                return redirect(
+                    url_for('nereid.checkout.payment_method')
+                )
+            if request.form.get('payment_profile'):
+                payment_profile = PaymentProfile(
+                    request.form.get('payment_profile', type=int)
+                )
+                if payment_profile and \
+                        cart.sale.invoice_address != payment_profile.address:
+                    cart.sale.invoice_address = payment_profile.address
+                    cart.sale.save()
+                    cart.sale.invoice_address.invoice = True
+                    cart.sale.invoice_address.save()
+                    return redirect(
+                        url_for('nereid.checkout.payment_method')
+                    )
+
+            if not current_user.is_anonymous and request.form.get('address'):
+                # Registered user has chosen an existing address
+                address = Address(request.form.get('address', type=int))
+                if address.party != cart.sale.party:
+                    flash(_('The address chosen is not valid'))
+                    return redirect(
+                        url_for('nereid.checkout.billing_address')
+                    )
+
+            else:
+                # Guest user or registered user creating an address. Only
+                # difference is that the party of address depends on guest or
+                # not
+                if not address_form.validate():
+                    address = None
+                else:
+                    if (
+                        current_user.is_anonymous and
+                        cart.sale.invoice_address and
+                        cart.sale.invoice_address != cart.sale.shipment_address
+                    ):
+                        # Save to the same address if the guest user
+                        # is just trying to update the address
+                        address = cart.sale.invoice_address
+                    else:
+                        address = Address()
+
+                    address.party = cart.sale.party
+                    address.party_name = address_form.name.data
+                    address.street = address_form.street.data
+                    address.zip = address_form.zip.data
+                    address.city = address_form.city.data
+                    address.country = address_form.country.data
+                    address.subdivision = address_form.subdivision.data
+
+                    if address_form.phone.data:
+                        address.phone = address_form.phone.data
+
+                    address.save()
+
+            if address is not None:
+                # Finally save the address to the shipment
+                address.invoice = True
+                address.save()
+                cart.sale.invoice_address = address
+                cart.sale.save()
+
+                return redirect(
+                    url_for('nereid.checkout.delivery_method')
+                )
+
+        addresses = []
+        if not current_user.is_anonymous:
+            addresses.extend(current_user.party.addresses)
+
+        return render_template(
+            'checkout/billing_address.jinja',
+            addresses=addresses,
+            address_form=address_form,
+        )
+
+    @classmethod
+    def get_credit_card_form(cls):
+        '''
+        Return a credit card form.
+        '''
+        return CreditCardForm()
+
+    @classmethod
+    def get_form_payment(cls):
+        '''
+        Return a payment form
+        '''
+        return PaymentForm()
+
+    @classmethod
+    def get_payment_form(cls):
+        '''
+        Populate the payment form
+        '''
+        pool = Pool()
+        NereidCart = pool.get('nereid.cart')
+
+        cart = NereidCart.open_cart()
+
+        payment_form = cls.get_form_payment()
+
+        # add possible alternate payment_methods
+        payment_form.alternate_payment_method.choices = [
+            (m.id, m.name) for m in cart.get_alternate_payment_methods()
+        ]
+
+        # add profiles of the registered user
+        if not current_user.is_anonymous:
+            payment_form.payment_profile.choices = [
+                (p.id, p.rec_name) for p in
+                current_user.party.get_payment_profiles()
+            ]
+        if (cart.sale.shipment_address == cart.sale.invoice_address) or (
+                not cart.sale.invoice_address):
+            payment_form.use_shipment_address.data = "y"
+
+        return payment_form
+
+    @classmethod
+    def _process_payment(cls, cart):
+        """
+        This is separated so that other modules can easily modify the
+        behavior of processing payment independent of this module.
+        """
+        pool = Pool()
+        PaymentMethod = pool.get('nereid.website.payment_method')
+        PaymentProfile = pool.get('party.payment_profile')
+
+        cls._sanitize_payments(cart)
+        payment_form = cls.get_payment_form()
+        credit_card_form = cls.get_credit_card_form()
+
+        if not current_user.is_anonymous and \
+                payment_form.payment_profile.data:
+            # Regd. user with payment_profile
+            rv = cart.sale._add_sale_payment(
+                payment_profile=PaymentProfile(
+                    payment_form.payment_profile.data
+                )
+            )
+            if isinstance(rv, BaseResponse):
+                # Redirects only if payment profile is invalid.
+                # Then do not confirm the order, just redirect
+                return rv
+            return cls.confirm_cart(cart)
+
+        elif payment_form.alternate_payment_method.data:
+            # Checkout using alternate payment method
+            rv = cart.sale._add_sale_payment(
+                alternate_payment_method=PaymentMethod(
+                    payment_form.alternate_payment_method.data
+                )
+            )
+            if isinstance(rv, BaseResponse):
+                # If the alternate payment method introduced a
+                # redirect, then save the order and go to that
+                cls.confirm_cart(cart)
+                return rv
+            return cls.confirm_cart(cart)
+
+        elif current_website.credit_card_gateway and \
+                credit_card_form.validate():
+            return cls._process_credit_card_payment(cart, credit_card_form)
+
+    @classmethod
+    def _process_credit_card_payment(cls, cart, credit_card_form):
+        # Validate the credit card form and checkout using that
+        # Only one payment per gateway
+        gateway = current_website.credit_card_gateway
+        payment = cart.sale._get_payment_for_gateway(gateway)
+        if payment is None:
+            cart.sale._add_sale_payment(credit_card_form=credit_card_form)
+        return cls.confirm_cart(cart)
+
+    @classmethod
+    def _sanitize_payments(cls, cart):
+        '''
+        Clean up any payments left over from unsuccessful attempts.
+
+        Since it is possible to return to payment_methods without using the
+        proper cancel buttons it may be necessary to clean up the payment
+        environment.
+        '''
+        sale = cart.sale
+        for payment in sale.payments:
+            if payment.amount != payment.amount_consumed:
+                payment.amount = payment.amount_consumed
+                payment.save()
+            if payment.amount == Decimal('0'):
+                for transaction in [
+                        t for t in payment.payment_transactions if
+                        t.state in ['draft', 'in-progress']
+                        ]:
+                            transaction.state = 'cancel'
+                            transaction.save()
+        sale.payment_processing_state = None
+        sale.sale_date = None
+        # Reset to the original channel settings
+        sale.on_change_channel()
+        sale.save()
+
+    @classmethod
+    @route('/checkout/payment', methods=['GET', 'POST'], readonly=False)
+    @not_empty_cart
+    @sale_has_non_guest_party
+    @with_company_context
+    def payment_method(cls):
+        '''
+        Select/Create a payment method
+
+        Allows adding new payment profiles for registered users. Guest users
+        are allowed to fill in credit card information or chose from one of
+        the existing payment gateways.
+        '''
+        pool = Pool()
+        NereidCart = pool.get('nereid.cart')
+        PaymentMethod = pool.get('nereid.website.payment_method')
+        Date = pool.get('ir.date')
+
+        cart = NereidCart.open_cart()
+        cls._sanitize_payments(cart)
+        sale = cart.sale
+        if not sale.shipment_address:
+            return redirect(url_for('nereid.checkout.shipping_address'))
+
+        payment_form = cls.get_payment_form()
+        credit_card_form = cls.get_credit_card_form()
+
+        if request.method == 'POST' and payment_form.validate():
+            # Setting sale date as current date
+            sale.sale_date = Date.today()
+            sale.save()
+
+            # call the billing address method which will handle any
+            # address submission that may be there in this request
+            cls.billing_address()
+
+            if not sale.invoice_address:
+                # If still there is no billing address. Do not proceed
+                # with this
+                return redirect(url_for('nereid.checkout.billing_address'))
+
+            rv = cls._process_payment(cart)
+            if isinstance(rv, BaseResponse):
+                # Return if BaseResponse
+                return rv
+
+            flash(_("Error in processing payment."), "warning")
+
+        return render_template(
+            'checkout/payment_method.jinja',
+            payment_form=payment_form,
+            credit_card_form=credit_card_form,
+            PaymentMethod=PaymentMethod,
+        )
+
+    @classmethod
+    def preprocess_confirm_cart(cls, cart):
+        '''
+        Run here any procedures needed before entering the queue
+        (e.g. methods that could need the request context)
+        '''
+        pass
+
+    @classmethod
+    def confirm_cart(cls, cart, do_redirect=True):
+        '''
+        Quote the sale, clear the sale from the cart
+        '''
+        pool = Pool()
+        Sale = pool.get('sale.sale')
+
+        cls.preprocess_confirm_cart(cart)
+
+        sale = cart.sale
+        if not sale:
+            return
+        with Transaction().set_context(
+                queue_name='sale_checkout',
+                ):
+            Sale.__queue__.quote_web_sales([sale])
+
+        cart.sale = None
+        cart.save()
+
+        # Redirect to the order confirmation page
+        flash(_("Your order has been processed"))
+        if do_redirect:
+            return redirect(url_for(
+                'sale.sale.render', active_id=sale.id, confirmation=True,
+                access_code=sale.guest_access_code))
+
+
+class Address(metaclass=PoolMeta):
+    """
+    Extension of party.address
+    """
+    __name__ = 'party.address'
+
+    phone = fields.Char("Phone", select=True)
+
+    @classmethod
+    @route("/create-address", methods=["GET", "POST"])
+    @login_required
+    def create_address(cls):
+        """
+        Create an address for the current nereid_user
+
+        GET
+        ~~~
+
+        Return an address creation form
+
+        POST
+        ~~~~
+
+        Creates an address and redirects to the address view. If a next_url
+        is provided, redirects there.
+
+        .. version_added: 3.0.3.0
+        """
+        form = cls.get_address_form()
+
+        if request.method == 'POST' and form.validate_on_submit():
+            party = current_user.party
+            address, = cls.create([{
+                'party_name': form.name.data,
+                'street': form.street.data,
+                'zip': form.zip.data,
+                'city': form.city.data,
+                'country': form.country.data,
+                'subdivision': form.subdivision.data,
+                'party': party.id,
+            }])
+            if form.phone.data:
+                cls.write([address], {
+                    'phone': form.phone.data
+                })
+            return redirect(url_for('party.address.view_address'))
+
+        return render_template('address-add.jinja', form=form)
+
+    @classmethod
+    @route("/save-new-address", methods=["GET", "POST"])
+    @route("/edit-address/<int:address>", methods=["GET", "POST"])
+    @login_required
+    def edit_address(cls, address=None):
+        """
+        Edit an Address
+
+        POST will update an existing address.
+        GET will return a existing address edit form.
+
+        .. version_changed:: 3.0.3.0
+
+            For creating new address use the create_address handled instead of
+            this one. The functionality would be deprecated in 3.2.X
+
+        :param address: ID of the address
+        """
+        address = cls(address)
+        if address.party != current_user.party:
+            # Check if the address belong to party
+            abort(403)
+
+        form = cls.get_address_form(address)
+
+        if request.method == 'POST' and form.validate_on_submit():
+            cls.write([address], {
+                'party_name': form.name.data,
+                'street': form.street.data,
+                'zip': form.zip.data,
+                'city': form.city.data,
+                'country': form.country.data,
+                'subdivision': form.subdivision.data,
+            })
+            if form.phone.data:
+                cls.write([address], {
+                    'phone': form.phone.data
+                })
+            return redirect(url_for('party.address.view_address'))
+
+        return render_template('address-edit.jinja', form=form, address=address)
