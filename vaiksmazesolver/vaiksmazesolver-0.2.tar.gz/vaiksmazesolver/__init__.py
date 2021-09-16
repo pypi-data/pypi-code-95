@@ -1,0 +1,1 @@
+from vaiksmazesolver.main import inputf 
