@@ -1,0 +1,31 @@
+# -*- coding: utf-8 -*-
+from setuptools import setup
+
+packages = \
+['able', 'able.bluezdbus', 'able.corebluetooth', 'able.plugins']
+
+package_data = \
+{'': ['*']}
+
+extras_require = \
+{':sys_platform == "darwin"': ['pyobjc>=7.3,<8.0'],
+ ':sys_platform == "linux"': ['dbus-next>=0.2.2,<0.3.0']}
+
+setup_kwargs = {
+    'name': 'able',
+    'version': '0.3.2',
+    'description': "ABle (Allthenticate's Bluetooth Low Energy (Library)) is a platform agnostic python framework for communication with centrals as a BLE Peripheral with simple yet powerful 'BLE Sockets'",
+    'long_description': '# ABle\n[![Imports: isort](https://img.shields.io/badge/%20imports-isort-%231674b1?style=flat&labelColor=ef8336)](https://pycqa.github.io/isort/)\n[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)\n[![Type checking: mypy](https://camo.githubusercontent.com/59eab954a267c6e9ff1d80e8055de43a0ad771f5e1f3779aef99d111f20bee40/687474703a2f2f7777772e6d7970792d6c616e672e6f72672f7374617469632f6d7970795f62616467652e737667)](https://mypy.readthedocs.io/en/stable/)\n\nAble stands for Allthenticate\'s BLE Peripheral Library.\nIt serves the purpose of enabling the abstraction of using a BLE Peripheral on Ubuntu, MacOs and Windows based systems\nwithout having to adapt your software to have platform specific support.\n\n# In Progress\n\nNote that this project is still undergoing work by the development team, the main things we are working on are:\n\n- Cleaning up some bugs in the bluezdbus and macos backend\n- Making the gitlab/github repo public for contributions\n- Setup a slack for developers to reach out to us about issues or ideas\n- Make logging/use clearer and update our documentation (for example we require a fork of bluez) and moving things from this readme to our docs\n- Get our docs on read the docs\n- Some more surprises :)\n\n# How To\'s\n\n## Quick Start\nTo get started just run `get_started.sh`. This will install poetry and all of the project\'s dependencies, and drop you into the projects virtual environment.\n\n```\nbash get_started.sh\n```\nWhenever you pull new updates we recommend running a quick `poetry install` to get any updates. From there, please check out our examples to get started with the project!\n\n## Upgrading Poetry Installer\n\nIt may be the case that the current version of your Poetry package is outdated. Run `scripts/check_poetry.sh` to check if there is a newer version of the poetry installer.\n\n```\nbash scripts/check_poetry.sh\n```\n\n# Documentation\n\n## Writing Docs\nWe follow the Sphinx docstring format for our docstrings, see the following [site](https://sphinx-rtd-tutorial.readthedocs.io/en/latest/docstrings.html) on the complete specification, but the\ngeneral docstring will look like:\n\n```\n"""\n[Summary]\n\n:param [ParamName]: [ParamDescription], defaults to [DefaultParamVal]\n:type [ParamName]: [ParamType](, optional)\n...\n:raises [ErrorType]: [ErrorDescription]\n...\n:return: [ReturnDescription]\n:rtype: [ReturnType]\n"""\n```\n\n## Generating Docs\nTo generate the docs for local use you should just have to run the following inside of the poetry shell:\n\n```\nmake html\n```\nThen open the html produced by Sphinx.\n\n## Auto-Generating Docs\n\nIf you want to have docs magically update as you are writing them, run the following command:\n\n```\nsphinx-autobuild source/ build/html/\n```\n\n# Testing Able\n\n## How To Test?\nRunning tests are easy, you need to only do a few things as a developer. First track down the IP of the companion you\nplan to be using, we recommend a raspberry pi. Once you have that IP, export it as an environment variable as so:\n\n```\nexport ABLE_CENTRAL_IP="<IP>"\n```\n\nNow, we can run the tests with the following command:\n\n```\npoetry install && poetry run pytest tests\n```\n\n## Rigorous Testing\nIf you want to do more rigorous testing over a long period of time and check for flaky tests, you will\nhave to modify the `pyproject.toml`. We already have the dependencies you need to run tests multiple times\nto detect flakiness, all you need to do is modify the following line:\n\n```\naddopts = "--flake-finder --flake-runs=1 --reruns 5 --reruns-delay 5"\n```\nInto:\n```\naddopts = "--flake-finder --flake-runs=10 --reruns 5 --reruns-delay 5"\n```\nThis will run each test 10 times, you can even modify it to be greater should you choose. You can also\nmodify the `reruns` and `reruns-delay` parameters to change how much time you should wait between failed tests,\nmaybe to let things simmer and how many reruns you will accept.\n\n### Speedy Tests\nOur dependencies include `pytest-fast-first` which will locally track which tests are quicker and will use AI and\ndeep learning (a json dictionary of times) to track and run tests that go faster first! Neat!\n\n## Coming Soon To Testing\nWe are hoping to have unit tests coming soon for Able but right now are relying solely on hardware in the loop tests\nto get things off the ground. Eventually we will detect if you have a companion set and if not, we will only run\nthe unit tests.\n\n# Support\nIf you have any questions on the use of this library feel free to reach out the head\nmaintainer <bernie@allthenticate.com> or submit an issue on the repository.\n\n## Contributing\nContributing is not currently enabled but once the repository is licensed we will be opening the project up for public contributions.\n\n\n# Acknowledgements\n\nThis project was inspired by the great work done by the developer team for [Bleak](https://github.com/hbldh/bleak)\nwhich is a fantastic platform agnostic bluetooth framework for a BLE client/central we would highly reccomend!\n\nWe also took notes from the work done by Kevin Car with his companion library [Bless](https://github.com/kevincar/bless),\nwho made a great server supplement to Bleak whose work saved us from countless hours from fighting dbus and pyobjc!\n',
+    'author': 'Bernie Conrad',
+    'author_email': 'bernie@allthenticate.com',
+    'maintainer': None,
+    'maintainer_email': None,
+    'url': 'https://allthenticate.com/',
+    'packages': packages,
+    'package_data': package_data,
+    'extras_require': extras_require,
+    'python_requires': '>=3.6.2,<4.0',
+}
+
+
+setup(**setup_kwargs)
